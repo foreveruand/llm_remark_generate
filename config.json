@@ -1,0 +1,28 @@
+{
+  "llm": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "gpt-4.1-mini",
+    "temperature": 0.2,
+    "timeout_seconds": 60
+  },
+  "search": {
+    "enabled": true,
+    "providers": ["tavily", "brave"],
+    "brave_api_key": "",
+    "tavily_api_key": "",
+    "max_results": 5,
+    "timeout_seconds": 20
+  },
+  "mappings": {
+    "Example Choice Note": {
+      "source_fields": ["Question", "Options", "Answer"],
+      "target_field": "Remark"
+    }
+  },
+  "prompt": {
+    "system": "You are an expert tutor. Generate a concise, accurate explanation for the Anki note. If the answer depends on current or external facts, request web search before writing the final explanation.",
+    "analysis_instruction": "Return JSON only: {\"need_search\": boolean, \"queries\": [string], \"reason\": string}. Use at most 3 targeted queries.",
+    "final_instruction": "Write the explanation in clear HTML suitable for an Anki field. Explain why the answer is correct and address likely distractors. When search results are provided, cite source titles or URLs briefly."
+  }
+}
