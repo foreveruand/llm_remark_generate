@@ -8,6 +8,7 @@ field such as `Remark`.
 ## Behavior
 
 - Run from the Anki Browser on selected notes.
+- Stop an in-progress batch from the progress dialog.
 - Configure core settings with the add-on's graphical configuration dialog.
 - Configure mappings by note type, for example `Question + Options + Answer -> Remark`.
 - Skip a note before any search or LLM call when the target field already has content.

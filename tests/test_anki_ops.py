@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin import _run_collection_op
+from ankiplugin import _format_batch_result, _run_collection_op
 from ankiplugin.models import BatchResult, NoteProcessResult
 
 
@@ -48,6 +48,14 @@ class AnkiOpsTest(unittest.TestCase):
 
         self.assertTrue(op.run_in_background_called)
 
+    def test_runs_collection_op_without_default_progress_when_requested(self) -> None:
+        op = CollectionOpWithProgress()
+
+        _run_collection_op(op, with_progress=False)
+
+        self.assertFalse(op.with_progress_called)
+        self.assertTrue(op.run_in_background_called)
+
     def test_batch_result_exposes_collection_op_changes(self) -> None:
         result = BatchResult()
         result.add(NoteProcessResult(note_id=1, status="failed", message="HTTP 400"))
@@ -59,6 +67,14 @@ class AnkiOpsTest(unittest.TestCase):
 
         self.assertTrue(result.changes.note)
         self.assertEqual(1, result.count)
+
+    def test_format_batch_result_marks_cancelled_run_as_stopped(self) -> None:
+        result = BatchResult(cancelled=True)
+
+        message = _format_batch_result(result)
+
+        self.assertIn("LLM Remark Generator stopped.", message)
+        self.assertIn("Stopped before all selected notes were processed.", message)
 
 
 if __name__ == "__main__":

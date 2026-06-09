@@ -34,6 +34,7 @@ class BatchResult:
     skipped_existing: int = 0
     skipped_unmapped: int = 0
     failed: int = 0
+    cancelled: bool = False
     details: list[NoteProcessResult] = field(default_factory=list)
 
     def add(self, result: NoteProcessResult) -> None:

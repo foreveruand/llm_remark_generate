@@ -49,6 +49,13 @@ class BatchGenerationError(RuntimeError):
     pass
 
 
+class ProcessingCancelled(RuntimeError):
+    pass
+
+
+CancelRequested = Callable[[], bool]
+
+
 def process_notes(
     col: CollectionLike,
     note_ids: list[int],
@@ -57,6 +64,7 @@ def process_notes(
     llm_client: LLMClient | None = None,
     search_providers: list[SearchProvider] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    cancel_requested: CancelRequested | None = None,
 ) -> BatchResult:
     mappings = parse_mappings(config)
     llm = llm_client or LLMClient(config)
@@ -64,6 +72,9 @@ def process_notes(
     max_results = int(config["search"].get("max_results", 5))
     prompt_config = config["prompt"]
     batch_config = config.get("batch", {})
+
+    if _cancel_requested(cancel_requested):
+        return BatchResult(cancelled=True)
 
     if _batch_enabled(batch_config) and len(note_ids) > 1 and len(set(note_ids)) == len(note_ids):
         return process_notes_batched(
@@ -76,6 +87,7 @@ def process_notes(
             prompt_config=prompt_config,
             batch_config=batch_config,
             progress=progress,
+            cancel_requested=cancel_requested,
         )
 
     return process_notes_individually(
@@ -87,6 +99,7 @@ def process_notes(
         max_results=max_results,
         prompt_config=prompt_config,
         progress=progress,
+        cancel_requested=cancel_requested,
     )
 
 
@@ -100,10 +113,14 @@ def process_notes_individually(
     max_results: int,
     prompt_config: JsonDict,
     progress: Callable[[int, int], None] | None = None,
+    cancel_requested: CancelRequested | None = None,
 ) -> BatchResult:
     batch = BatchResult()
     total = len(note_ids)
     for index, note_id in enumerate(note_ids, start=1):
+        if _cancel_requested(cancel_requested):
+            batch.cancelled = True
+            break
         try:
             note = col.get_note(note_id)
             result = process_note(
@@ -114,7 +131,11 @@ def process_notes_individually(
                 providers,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                cancel_requested=cancel_requested,
             )
+        except ProcessingCancelled:
+            batch.cancelled = True
+            break
         except Exception as exc:
             result = NoteProcessResult(note_id=note_id, status="failed", message=str(exc))
         batch.add(result)
@@ -134,11 +155,14 @@ def process_notes_batched(
     prompt_config: JsonDict,
     batch_config: JsonDict,
     progress: Callable[[int, int], None] | None = None,
+    cancel_requested: CancelRequested | None = None,
 ) -> BatchResult:
     result_by_note_id: dict[int, NoteProcessResult] = {}
     prepared_notes: list[PreparedNote] = []
 
     for note_id in note_ids:
+        if _cancel_requested(cancel_requested):
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
         try:
             note = col.get_note(note_id)
             prepared_or_result = prepare_note(note, mappings)
@@ -152,18 +176,24 @@ def process_notes_batched(
             prepared_notes.append(prepared_or_result)
 
     if len(prepared_notes) <= 1:
-        _process_prepared_notes_individually(
-            col,
-            prepared_notes,
-            result_by_note_id,
-            llm,
-            providers,
-            max_results=max_results,
-            prompt_config=prompt_config,
-        )
+        try:
+            _process_prepared_notes_individually(
+                col,
+                prepared_notes,
+                result_by_note_id,
+                llm,
+                providers,
+                max_results=max_results,
+                prompt_config=prompt_config,
+                cancel_requested=cancel_requested,
+            )
+        except ProcessingCancelled:
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
         return _build_batch_result(note_ids, result_by_note_id, progress)
 
     for prepared in prepared_notes:
+        if _cancel_requested(cancel_requested):
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
         try:
             ensure_search_results(
                 prepared,
@@ -171,7 +201,10 @@ def process_notes_batched(
                 providers,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                cancel_requested=cancel_requested,
             )
+        except ProcessingCancelled:
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
         except Exception as exc:
             result_by_note_id[prepared.note.id] = NoteProcessResult(
                 note_id=prepared.note.id,
@@ -181,15 +214,19 @@ def process_notes_batched(
 
     batch_candidates = [prepared for prepared in prepared_notes if prepared.note.id not in result_by_note_id]
     if len(batch_candidates) <= 1:
-        _process_prepared_notes_individually(
-            col,
-            batch_candidates,
-            result_by_note_id,
-            llm,
-            providers,
-            max_results=max_results,
-            prompt_config=prompt_config,
-        )
+        try:
+            _process_prepared_notes_individually(
+                col,
+                batch_candidates,
+                result_by_note_id,
+                llm,
+                providers,
+                max_results=max_results,
+                prompt_config=prompt_config,
+                cancel_requested=cancel_requested,
+            )
+        except ProcessingCancelled:
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
         return _build_batch_result(note_ids, result_by_note_id, progress)
 
     fallback = bool(batch_config.get("fallback_to_single_on_error", True))
@@ -199,22 +236,10 @@ def process_notes_batched(
         max_chars=int(batch_config.get("max_chars_per_request", 30000)),
     )
     for chunk in chunks:
+        if _cancel_requested(cancel_requested):
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
         if len(chunk) == 1:
-            _process_prepared_notes_individually(
-                col,
-                chunk,
-                result_by_note_id,
-                llm,
-                providers,
-                max_results=max_results,
-                prompt_config=prompt_config,
-            )
-            continue
-
-        try:
-            explanations = generate_batch_explanations(llm, chunk, prompt_config)
-        except Exception as exc:
-            if fallback:
+            try:
                 _process_prepared_notes_individually(
                     col,
                     chunk,
@@ -223,7 +248,33 @@ def process_notes_batched(
                     providers,
                     max_results=max_results,
                     prompt_config=prompt_config,
+                    cancel_requested=cancel_requested,
                 )
+            except ProcessingCancelled:
+                return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
+            continue
+
+        try:
+            _raise_if_cancelled(cancel_requested)
+            explanations = generate_batch_explanations(llm, chunk, prompt_config)
+            _raise_if_cancelled(cancel_requested)
+        except ProcessingCancelled:
+            return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
+        except Exception as exc:
+            if fallback:
+                try:
+                    _process_prepared_notes_individually(
+                        col,
+                        chunk,
+                        result_by_note_id,
+                        llm,
+                        providers,
+                        max_results=max_results,
+                        prompt_config=prompt_config,
+                        cancel_requested=cancel_requested,
+                    )
+                except ProcessingCancelled:
+                    return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
             else:
                 message = str(exc)
                 for prepared in chunk:
@@ -235,6 +286,8 @@ def process_notes_batched(
             continue
 
         for prepared in chunk:
+            if _cancel_requested(cancel_requested):
+                return _build_batch_result(note_ids, result_by_note_id, progress, cancelled=True)
             note_id = prepared.note.id
             try:
                 prepared.note[prepared.mapping.target_field] = explanations[note_id]
@@ -256,7 +309,9 @@ def process_note(
     *,
     max_results: int,
     prompt_config: JsonDict,
+    cancel_requested: CancelRequested | None = None,
 ) -> NoteProcessResult:
+    _raise_if_cancelled(cancel_requested)
     prepared_or_result = prepare_note(note, mappings)
     if isinstance(prepared_or_result, NoteProcessResult):
         return prepared_or_result
@@ -267,6 +322,7 @@ def process_note(
         search_providers,
         max_results=max_results,
         prompt_config=prompt_config,
+        cancel_requested=cancel_requested,
     )
 
 
@@ -303,7 +359,9 @@ def process_prepared_note(
     *,
     max_results: int,
     prompt_config: JsonDict,
+    cancel_requested: CancelRequested | None = None,
 ) -> NoteProcessResult:
+    _raise_if_cancelled(cancel_requested)
     source_text = prepared.source_text
     search_results = ensure_search_results(
         prepared,
@@ -311,8 +369,11 @@ def process_prepared_note(
         search_providers,
         max_results=max_results,
         prompt_config=prompt_config,
+        cancel_requested=cancel_requested,
     )
+    _raise_if_cancelled(cancel_requested)
     explanation = generate_explanation(llm, source_text, search_results, prompt_config)
+    _raise_if_cancelled(cancel_requested)
     prepared.note[prepared.mapping.target_field] = explanation
     col.update_note(prepared.note)
     return NoteProcessResult(note_id=prepared.note.id, status="written")
@@ -325,15 +386,23 @@ def ensure_search_results(
     *,
     max_results: int,
     prompt_config: JsonDict,
+    cancel_requested: CancelRequested | None = None,
 ) -> list[SearchResult]:
     if prepared.search_checked:
         return prepared.search_results
 
+    _raise_if_cancelled(cancel_requested)
     search_decision = decide_search(llm, prepared.source_text, prompt_config)
+    _raise_if_cancelled(cancel_requested)
     search_results: list[SearchResult] = []
     if search_decision.get("need_search") and search_providers:
         queries = [query for query in search_decision.get("queries", []) if isinstance(query, str) and query.strip()]
-        search_results = run_searches(search_providers, queries[:3], max_results=max_results)
+        search_results = run_searches(
+            search_providers,
+            queries[:3],
+            max_results=max_results,
+            cancel_requested=cancel_requested,
+        )
 
     prepared.search_results = search_results
     prepared.search_checked = True
@@ -460,11 +529,14 @@ def run_searches(
     queries: list[str],
     *,
     max_results: int,
+    cancel_requested: CancelRequested | None = None,
 ) -> list[SearchResult]:
     results: list[SearchResult] = []
     for query in queries:
         for provider in providers:
+            _raise_if_cancelled(cancel_requested)
             results.extend(provider.search(query, max_results=max_results))
+            _raise_if_cancelled(cancel_requested)
     return dedupe_results(results, limit=max_results)
 
 
@@ -477,8 +549,10 @@ def _process_prepared_notes_individually(
     *,
     max_results: int,
     prompt_config: JsonDict,
+    cancel_requested: CancelRequested | None = None,
 ) -> None:
     for prepared in prepared_notes:
+        _raise_if_cancelled(cancel_requested)
         try:
             result = process_prepared_note(
                 col,
@@ -487,7 +561,10 @@ def _process_prepared_notes_individually(
                 providers,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                cancel_requested=cancel_requested,
             )
+        except ProcessingCancelled:
+            raise
         except Exception as exc:
             result = NoteProcessResult(note_id=prepared.note.id, status="failed", message=str(exc))
         result_by_note_id[prepared.note.id] = result
@@ -497,17 +574,32 @@ def _build_batch_result(
     note_ids: list[int],
     result_by_note_id: dict[int, NoteProcessResult],
     progress: Callable[[int, int], None] | None,
+    *,
+    cancelled: bool = False,
 ) -> BatchResult:
-    batch = BatchResult()
+    batch = BatchResult(cancelled=cancelled)
     total = len(note_ids)
-    for index, note_id in enumerate(note_ids, start=1):
+    progress_count = 0
+    for note_id in note_ids:
         result = result_by_note_id.get(note_id)
         if result is None:
+            if cancelled:
+                continue
             result = NoteProcessResult(note_id=note_id, status="failed", message="note was not processed")
         batch.add(result)
+        progress_count += 1
         if progress:
-            progress(index, total)
+            progress(progress_count, total)
     return batch
+
+
+def _raise_if_cancelled(cancel_requested: CancelRequested | None) -> None:
+    if _cancel_requested(cancel_requested):
+        raise ProcessingCancelled("processing stopped by user")
+
+
+def _cancel_requested(cancel_requested: CancelRequested | None) -> bool:
+    return bool(cancel_requested and cancel_requested())
 
 
 def split_prepared_notes(

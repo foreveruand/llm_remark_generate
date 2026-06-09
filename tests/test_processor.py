@@ -179,6 +179,59 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual("<p>Four is correct.</p>", note["Remark"])
         self.assertEqual([], search.calls)
 
+    def test_individual_processing_stops_after_current_note_when_cancelled(self) -> None:
+        first = FakeNote(
+            10,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        second = FakeNote(
+            11,
+            "Choice",
+            {
+                "Question": "3 + 3 = ?",
+                "Options": "A. 6\nB. 7",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([first, second])
+        llm = FakeLLM(
+            [
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                "<p>Four is correct.</p>",
+            ]
+        )
+        stopped = False
+
+        def progress(current: int, _total: int) -> None:
+            nonlocal stopped
+            if current == 1:
+                stopped = True
+
+        result = process_notes(
+            col,
+            [10, 11],
+            test_config(),
+            llm_client=llm,
+            search_providers=[],
+            progress=progress,
+            cancel_requested=lambda: stopped,
+        )
+
+        self.assertTrue(result.cancelled)
+        self.assertEqual(1, result.processed)
+        self.assertEqual(1, result.written)
+        self.assertEqual([10], col.updated_note_ids)
+        self.assertEqual("<p>Four is correct.</p>", first["Remark"])
+        self.assertEqual("", second["Remark"])
+        self.assertEqual(2, len(llm.calls))
+
     def test_batch_combines_final_generation_for_multiple_notes(self) -> None:
         first = FakeNote(
             4,
@@ -227,6 +280,47 @@ class ProcessorTest(unittest.TestCase):
         batch_prompt = llm.calls[2]["messages"][1]["content"]
         self.assertIn('"note_id": 4', batch_prompt)
         self.assertIn('"note_id": 5', batch_prompt)
+
+    def test_batch_processing_can_stop_before_final_generation(self) -> None:
+        first = FakeNote(
+            12,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        second = FakeNote(
+            13,
+            "Choice",
+            {
+                "Question": "3 + 3 = ?",
+                "Options": "A. 6\nB. 7",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([first, second])
+        llm = FakeLLM(['{"need_search": false, "queries": [], "reason": "simple math"}'])
+
+        result = process_notes(
+            col,
+            [12, 13],
+            batch_test_config(),
+            llm_client=llm,
+            search_providers=[],
+            cancel_requested=lambda: len(llm.calls) >= 1,
+        )
+
+        self.assertTrue(result.cancelled)
+        self.assertEqual(0, result.processed)
+        self.assertEqual(0, result.written)
+        self.assertEqual([], col.updated_note_ids)
+        self.assertEqual("", first["Remark"])
+        self.assertEqual("", second["Remark"])
+        self.assertEqual(1, len(llm.calls))
 
     def test_batch_invalid_response_without_fallback_does_not_write_notes(self) -> None:
         first = FakeNote(
