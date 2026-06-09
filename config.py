@@ -22,6 +22,12 @@ DEFAULT_CONFIG: JsonDict = {
         "max_results": 5,
         "timeout_seconds": 20,
     },
+    "batch": {
+        "enabled": False,
+        "max_notes_per_request": 10,
+        "max_chars_per_request": 30000,
+        "fallback_to_single_on_error": True,
+    },
     "mappings": {},
     "prompt": {
         "system": (
@@ -103,6 +109,16 @@ def validate_config(config: JsonDict) -> None:
         if "tavily" in providers and not _non_empty_string(search.get("tavily_api_key")):
             raise ConfigError("search.tavily_api_key is required when Tavily is enabled")
 
+    batch = _require_object(config, "batch")
+    if not _positive_int(batch.get("max_notes_per_request")):
+        raise ConfigError("batch.max_notes_per_request must be a positive integer")
+    if not _positive_int(batch.get("max_chars_per_request")):
+        raise ConfigError("batch.max_chars_per_request must be a positive integer")
+    if not isinstance(batch.get("enabled", False), bool):
+        raise ConfigError("batch.enabled must be a boolean")
+    if not isinstance(batch.get("fallback_to_single_on_error", True), bool):
+        raise ConfigError("batch.fallback_to_single_on_error must be a boolean")
+
     parse_mappings(config)
 
 
@@ -123,3 +139,7 @@ def _require_object(config: JsonDict, key: str) -> JsonDict:
 
 def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0

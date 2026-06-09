@@ -25,6 +25,7 @@ class PackageAddonTest(unittest.TestCase):
                 manifest = json.loads(archive.read("manifest.json"))
 
         self.assertIn("__init__.py", names)
+        self.assertIn("config_dialog.py", names)
         self.assertIn("manifest.json", names)
         self.assertNotIn(f"{ADDON_PACKAGE}/__init__.py", names)
         self.assertFalse(any("__pycache__" in name for name in names))

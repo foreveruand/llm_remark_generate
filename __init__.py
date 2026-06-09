@@ -20,6 +20,12 @@ def _register() -> None:
     except Exception:
         return
 
+    from .config_dialog import show_config_dialog
+
+    set_config_action = getattr(mw.addonManager, "setConfigAction", None)
+    if callable(set_config_action):
+        set_config_action(__name__, lambda *_args: show_config_dialog(mw, __name__))
+
     def on_browser_menus_did_init(browser: Any) -> None:
         action = QAction("Generate LLM Remark", browser)
         qconnect(action.triggered, lambda: _run_from_browser(browser))

@@ -10,6 +10,7 @@ ADDON_PACKAGE = "llm_remark_generator"
 ADDON_NAME = "LLM Remark Generator"
 INCLUDED = [
     "__init__.py",
+    "config_dialog.py",
     "config.py",
     "config.json",
     "http_client.py",

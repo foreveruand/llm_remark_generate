@@ -14,6 +14,12 @@
     "max_results": 5,
     "timeout_seconds": 20
   },
+  "batch": {
+    "enabled": false,
+    "max_notes_per_request": 10,
+    "max_chars_per_request": 30000,
+    "fallback_to_single_on_error": true
+  },
   "mappings": {
     "Example Choice Note": {
       "source_fields": ["Question", "Options", "Answer"],

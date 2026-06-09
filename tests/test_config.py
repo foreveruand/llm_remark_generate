@@ -61,6 +61,26 @@ class ConfigTest(unittest.TestCase):
 
         validate_config(config)
 
+    def test_default_batch_config_is_disabled(self) -> None:
+        config = merged_config({"llm": {"api_key": "llm-key"}, "search": {"enabled": False}})
+
+        self.assertFalse(config["batch"]["enabled"])
+        self.assertEqual(10, config["batch"]["max_notes_per_request"])
+        self.assertEqual(30000, config["batch"]["max_chars_per_request"])
+        self.assertTrue(config["batch"]["fallback_to_single_on_error"])
+
+    def test_validate_rejects_invalid_batch_threshold(self) -> None:
+        config = merged_config(
+            {
+                "llm": {"api_key": "llm-key"},
+                "search": {"enabled": False},
+                "batch": {"max_notes_per_request": 0},
+            }
+        )
+
+        with self.assertRaisesRegex(ConfigError, "batch.max_notes_per_request"):
+            validate_config(config)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -87,6 +87,19 @@ def test_config() -> dict[str, Any]:
     )
 
 
+def batch_test_config(*, fallback: bool = True) -> dict[str, Any]:
+    config = test_config()
+    config["batch"].update(
+        {
+            "enabled": True,
+            "max_notes_per_request": 10,
+            "max_chars_per_request": 30000,
+            "fallback_to_single_on_error": fallback,
+        }
+    )
+    return config
+
+
 class ProcessorTest(unittest.TestCase):
     def test_skips_existing_target_before_llm_or_search_calls(self) -> None:
         note = FakeNote(
@@ -165,6 +178,135 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual(1, result.written)
         self.assertEqual("<p>Four is correct.</p>", note["Remark"])
         self.assertEqual([], search.calls)
+
+    def test_batch_combines_final_generation_for_multiple_notes(self) -> None:
+        first = FakeNote(
+            4,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        second = FakeNote(
+            5,
+            "Choice",
+            {
+                "Question": "3 + 3 = ?",
+                "Options": "A. 6\nB. 7",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([first, second])
+        llm = FakeLLM(
+            [
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                (
+                    '{"results":['
+                    '{"note_id":4,"html":"<p>Four is correct.</p>"},'
+                    '{"note_id":5,"html":"<p>Six is correct.</p>"}'
+                    "]}"
+                ),
+            ]
+        )
+        search = FakeSearchProvider()
+
+        result = process_notes(col, [4, 5], batch_test_config(), llm_client=llm, search_providers=[search])
+
+        self.assertEqual(2, result.written)
+        self.assertEqual([4, 5], col.updated_note_ids)
+        self.assertEqual("<p>Four is correct.</p>", first["Remark"])
+        self.assertEqual("<p>Six is correct.</p>", second["Remark"])
+        self.assertEqual([], search.calls)
+        self.assertEqual(3, len(llm.calls))
+        self.assertEqual({"type": "json_object"}, llm.calls[2]["response_format"])
+        batch_prompt = llm.calls[2]["messages"][1]["content"]
+        self.assertIn('"note_id": 4', batch_prompt)
+        self.assertIn('"note_id": 5', batch_prompt)
+
+    def test_batch_invalid_response_without_fallback_does_not_write_notes(self) -> None:
+        first = FakeNote(
+            6,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        second = FakeNote(
+            7,
+            "Choice",
+            {
+                "Question": "3 + 3 = ?",
+                "Options": "A. 6\nB. 7",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([first, second])
+        llm = FakeLLM(
+            [
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                '{"results":[{"note_id":6,"html":"<p>Four is correct.</p>"}]}',
+            ]
+        )
+
+        result = process_notes(col, [6, 7], batch_test_config(fallback=False), llm_client=llm, search_providers=[])
+
+        self.assertEqual(0, result.written)
+        self.assertEqual(2, result.failed)
+        self.assertEqual([], col.updated_note_ids)
+        self.assertEqual("", first["Remark"])
+        self.assertEqual("", second["Remark"])
+
+    def test_batch_invalid_response_can_fallback_to_single_generation(self) -> None:
+        first = FakeNote(
+            8,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        second = FakeNote(
+            9,
+            "Choice",
+            {
+                "Question": "3 + 3 = ?",
+                "Options": "A. 6\nB. 7",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([first, second])
+        llm = FakeLLM(
+            [
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                "not json",
+                "<p>Four is correct.</p>",
+                "<p>Six is correct.</p>",
+            ]
+        )
+
+        result = process_notes(col, [8, 9], batch_test_config(), llm_client=llm, search_providers=[])
+
+        self.assertEqual(2, result.written)
+        self.assertEqual([8, 9], col.updated_note_ids)
+        self.assertEqual("<p>Four is correct.</p>", first["Remark"])
+        self.assertEqual("<p>Six is correct.</p>", second["Remark"])
+        self.assertEqual(5, len(llm.calls))
+        self.assertIsNone(llm.calls[3]["response_format"])
+        self.assertIsNone(llm.calls[4]["response_format"])
 
 
 if __name__ == "__main__":
