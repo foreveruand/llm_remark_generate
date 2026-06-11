@@ -124,6 +124,33 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual([], search.calls)
         self.assertEqual([], col.updated_note_ids)
 
+    def test_append_mode_does_not_skip_existing_target(self) -> None:
+        note = FakeNote(
+            14,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "<p>Existing explanation.</p>",
+            },
+        )
+        col = FakeCollection([note])
+        llm = FakeLLM(
+            [
+                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                "<p>Four is correct.</p>",
+            ]
+        )
+
+        result = process_notes(col, [14], test_config(), llm_client=llm, search_providers=[], append=True)
+
+        self.assertEqual(1, result.written)
+        self.assertEqual(0, result.skipped_existing)
+        self.assertEqual([14], col.updated_note_ids)
+        self.assertEqual("<p>Existing explanation.</p><p>Four is correct.</p>", note["Remark"])
+        self.assertEqual(2, len(llm.calls))
+
     def test_generates_explanation_with_llm_selected_search(self) -> None:
         note = FakeNote(
             2,

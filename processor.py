@@ -65,6 +65,7 @@ def process_notes(
     search_providers: list[SearchProvider] | None = None,
     progress: Callable[[int, int], None] | None = None,
     cancel_requested: CancelRequested | None = None,
+    append: bool = False,
 ) -> BatchResult:
     mappings = parse_mappings(config)
     llm = llm_client or LLMClient(config)
@@ -76,7 +77,7 @@ def process_notes(
     if _cancel_requested(cancel_requested):
         return BatchResult(cancelled=True)
 
-    if _batch_enabled(batch_config) and len(note_ids) > 1 and len(set(note_ids)) == len(note_ids):
+    if not append and _batch_enabled(batch_config) and len(note_ids) > 1 and len(set(note_ids)) == len(note_ids):
         return process_notes_batched(
             col,
             note_ids,
@@ -100,6 +101,7 @@ def process_notes(
         prompt_config=prompt_config,
         progress=progress,
         cancel_requested=cancel_requested,
+        append=append,
     )
 
 
@@ -114,6 +116,7 @@ def process_notes_individually(
     prompt_config: JsonDict,
     progress: Callable[[int, int], None] | None = None,
     cancel_requested: CancelRequested | None = None,
+    append: bool = False,
 ) -> BatchResult:
     batch = BatchResult()
     total = len(note_ids)
@@ -132,6 +135,7 @@ def process_notes_individually(
                 max_results=max_results,
                 prompt_config=prompt_config,
                 cancel_requested=cancel_requested,
+                append=append,
             )
         except ProcessingCancelled:
             batch.cancelled = True
@@ -310,9 +314,10 @@ def process_note(
     max_results: int,
     prompt_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
+    append: bool = False,
 ) -> NoteProcessResult:
     _raise_if_cancelled(cancel_requested)
-    prepared_or_result = prepare_note(note, mappings)
+    prepared_or_result = prepare_note(note, mappings, skip_existing=not append)
     if isinstance(prepared_or_result, NoteProcessResult):
         return prepared_or_result
     return process_prepared_note(
@@ -323,12 +328,15 @@ def process_note(
         max_results=max_results,
         prompt_config=prompt_config,
         cancel_requested=cancel_requested,
+        append=append,
     )
 
 
 def prepare_note(
     note: NoteLike,
     mappings: dict[str, FieldMapping],
+    *,
+    skip_existing: bool = True,
 ) -> PreparedNote | NoteProcessResult:
     note_type = note.note_type()
     note_type_name = note_type.get("name") if isinstance(note_type, dict) else None
@@ -344,7 +352,7 @@ def prepare_note(
     if missing:
         return NoteProcessResult(note_id=note.id, status="failed", message=f"missing fields: {', '.join(missing)}")
 
-    if note[mapping.target_field].strip():
+    if skip_existing and note[mapping.target_field].strip():
         return NoteProcessResult(note_id=note.id, status="skipped_existing", message="target field already has content")
 
     source_text = format_note_fields(note, mapping)
@@ -360,6 +368,7 @@ def process_prepared_note(
     max_results: int,
     prompt_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
+    append: bool = False,
 ) -> NoteProcessResult:
     _raise_if_cancelled(cancel_requested)
     source_text = prepared.source_text
@@ -374,7 +383,11 @@ def process_prepared_note(
     _raise_if_cancelled(cancel_requested)
     explanation = generate_explanation(llm, source_text, search_results, prompt_config)
     _raise_if_cancelled(cancel_requested)
-    prepared.note[prepared.mapping.target_field] = explanation
+    target_field = prepared.mapping.target_field
+    if append:
+        prepared.note[target_field] = append_field_content(prepared.note[target_field], explanation)
+    else:
+        prepared.note[target_field] = explanation
     col.update_note(prepared.note)
     return NoteProcessResult(note_id=prepared.note.id, status="written")
 
@@ -640,6 +653,10 @@ def format_note_fields(note: NoteLike, mapping: FieldMapping) -> str:
     for field in mapping.source_fields:
         parts.append(f"{field}:\n{note[field]}")
     return "\n\n".join(parts)
+
+
+def append_field_content(existing: str, addition: str) -> str:
+    return f"{existing}{addition}"
 
 
 def format_search_results(results: list[SearchResult]) -> str:

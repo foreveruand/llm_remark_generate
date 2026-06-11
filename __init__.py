@@ -10,6 +10,14 @@ from .processor import process_notes
 
 
 ADDON_NAME = "LLM Remark Generator"
+REVIEWER_APPEND_COMMAND = "llm_remark_generator_append_current"
+REVIEWER_APPEND_BUTTON_HTML = (
+    '<span style="padding-left: 8px;">'
+    f'<button onclick="pycmd(\'{REVIEWER_APPEND_COMMAND}\')" '
+    'title="Append a new LLM result to the configured target field">'
+    "Append LLM Remark"
+    "</button></span>"
+)
 
 
 class _CancellationToken:
@@ -36,12 +44,17 @@ def _register() -> None:
             QVBoxLayout,
             qconnect,
         )
-        from aqt.utils import askUser, showInfo, showWarning
+        from aqt.utils import askUser, showInfo, showWarning, tooltip
         from aqt.operations import CollectionOp
     except Exception:
         return
 
     from .config_dialog import show_config_dialog
+
+    try:
+        from aqt.reviewer import Reviewer
+    except Exception:
+        Reviewer = None
 
     class BatchProgressDialog(QDialog):
         def __init__(self, parent: Any, total: int, cancel_token: _CancellationToken) -> None:
@@ -148,6 +161,33 @@ def _register() -> None:
         progress_dialog.show()
         _run_collection_op(op, with_progress=False)
 
+    def _run_from_reviewer(reviewer: Any) -> None:
+        note_id = _current_reviewer_note_id(reviewer)
+        if note_id is None:
+            showInfo("No current review card.")
+            return
+
+        config = merged_config(mw.addonManager.getConfig(__name__))
+        try:
+            validate_config(config)
+        except ConfigError as exc:
+            showWarning(f"{ADDON_NAME} configuration error:\n\n{exc}")
+            return
+
+        parent = getattr(reviewer, "mw", mw)
+        op = CollectionOp(
+            parent=parent,
+            op=lambda col: process_notes(
+                col,
+                [note_id],
+                config,
+                append=True,
+            ),
+        )
+        op.success(lambda result: _finish_reviewer_success(reviewer, result))
+        op.failure(lambda exc: showWarning(f"{ADDON_NAME} failed:\n\n{exc}"))
+        _run_collection_op(op)
+
     def _progress_callback(total: int, progress_dialog: Any):
         last_update = 0.0
 
@@ -171,7 +211,40 @@ def _register() -> None:
         progress_dialog.finish()
         showWarning(f"{ADDON_NAME} failed:\n\n{exc}")
 
+    def _finish_reviewer_success(reviewer: Any, result: BatchResult) -> None:
+        if result.written:
+            _refresh_reviewer_card(reviewer)
+            tooltip("LLM result appended to target field.")
+            return
+
+        detail = result.details[0] if result.details else None
+        message = detail.message if detail and detail.message else _format_batch_result(result)
+        showWarning(f"{ADDON_NAME} did not append:\n\n{message}")
+
+    def _register_reviewer_append_button() -> None:
+        if Reviewer is None or getattr(Reviewer, "_llm_remark_append_button_patched", False):
+            return
+
+        original_bottom_html = getattr(Reviewer, "_bottomHTML", None)
+        original_link_handler = getattr(Reviewer, "_linkHandler", None)
+        if not callable(original_bottom_html) or not callable(original_link_handler):
+            return
+
+        def bottom_html(self: Any) -> str:
+            return _append_reviewer_button_html(original_bottom_html(self))
+
+        def link_handler(self: Any, command: str) -> Any:
+            if _is_reviewer_append_command(command):
+                _run_from_reviewer(self)
+                return None
+            return original_link_handler(self, command)
+
+        Reviewer._bottomHTML = bottom_html
+        Reviewer._linkHandler = link_handler
+        Reviewer._llm_remark_append_button_patched = True
+
     gui_hooks.browser_menus_did_init.append(on_browser_menus_did_init)
+    _register_reviewer_append_button()
 
 
 def _selected_note_ids(browser: Any) -> list[int]:
@@ -196,6 +269,33 @@ def _run_collection_op(op: Any, *, with_progress: bool = True) -> None:
     if with_progress and callable(op_with_progress):
         op = op_with_progress()
     op.run_in_background()
+
+
+def _append_reviewer_button_html(html: str) -> str:
+    if REVIEWER_APPEND_COMMAND in html:
+        return html
+    return f"{html}{REVIEWER_APPEND_BUTTON_HTML}"
+
+
+def _is_reviewer_append_command(command: str) -> bool:
+    return command == REVIEWER_APPEND_COMMAND
+
+
+def _current_reviewer_note_id(reviewer: Any) -> int | None:
+    card = getattr(reviewer, "card", None)
+    note_id = getattr(card, "nid", None)
+    if note_id is None:
+        return None
+    try:
+        return int(note_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _refresh_reviewer_card(reviewer: Any) -> None:
+    redraw = getattr(reviewer, "_redraw_current_card", None)
+    if callable(redraw):
+        redraw()
 
 
 def _format_batch_result(result: BatchResult) -> str:

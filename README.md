@@ -1,6 +1,7 @@
 # LLM Remark Generator for Anki
 
-An Anki add-on that generates explanations for selected Browser notes with an
+An Anki add-on that generates explanations for selected Browser notes or the
+current review card with an
 OpenAI-compatible LLM. It can combine multiple source fields, optionally use web
 search through Brave and Tavily, and write the final explanation into a target
 field such as `Remark`.
@@ -8,10 +9,15 @@ field such as `Remark`.
 ## Behavior
 
 - Run from the Anki Browser on selected notes.
+- Append a new LLM remark from the card review page with the `Append LLM Remark`
+  button.
 - Stop an in-progress batch from the progress dialog.
 - Configure core settings with the add-on's graphical configuration dialog.
 - Configure mappings by note type, for example `Question + Options + Answer -> Remark`.
-- Skip a note before any search or LLM call when the target field already has content.
+- Skip a Browser-selected note before any search or LLM call when the target
+  field already has content.
+- The review-page append button does not check whether the target field already
+  has content; it appends the new LLM result to the field.
 - Ask the LLM whether web search is needed, then call enabled providers when needed.
 - Write concise HTML into the configured target field.
 - Optionally combine final explanation generation for multiple notes into one LLM request.
