@@ -69,6 +69,40 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(30000, config["batch"]["max_chars_per_request"])
         self.assertTrue(config["batch"]["fallback_to_single_on_error"])
 
+    def test_default_llm_api_type_is_completion(self) -> None:
+        config = merged_config({"llm": {"api_key": "llm-key"}, "search": {"enabled": False}})
+
+        self.assertEqual("completion", config["llm"]["api_type"])
+
+    def test_validate_accepts_supported_llm_api_types(self) -> None:
+        for api_type in ("completion", "response"):
+            with self.subTest(api_type=api_type):
+                config = merged_config(
+                    {
+                        "llm": {"api_key": "llm-key", "api_type": api_type},
+                        "search": {"enabled": False},
+                    }
+                )
+
+                validate_config(config)
+
+    def test_validate_accepts_missing_llm_api_type(self) -> None:
+        config = merged_config({"llm": {"api_key": "llm-key"}, "search": {"enabled": False}})
+        del config["llm"]["api_type"]
+
+        validate_config(config)
+
+    def test_validate_rejects_invalid_llm_api_type(self) -> None:
+        config = merged_config(
+            {
+                "llm": {"api_key": "llm-key", "api_type": "Response"},
+                "search": {"enabled": False},
+            }
+        )
+
+        with self.assertRaisesRegex(ConfigError, "llm.api_type"):
+            validate_config(config)
+
     def test_validate_rejects_invalid_batch_threshold(self) -> None:
         config = merged_config(
             {

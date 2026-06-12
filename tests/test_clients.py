@@ -67,8 +67,15 @@ class LLMClientTest(unittest.TestCase):
         self.assertEqual("POST", captured["method"])
         self.assertEqual("https://llm.example/v1/chat/completions", captured["url"])
         self.assertEqual("Bearer secret", captured["headers"]["Authorization"])
-        self.assertEqual("model-a", captured["payload"]["model"])
-        self.assertEqual({"type": "json_object"}, captured["payload"]["response_format"])
+        self.assertEqual(
+            {
+                "model": "model-a",
+                "messages": [{"role": "user", "content": "hello"}],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            },
+            captured["payload"],
+        )
         self.assertEqual(12, captured["timeout"])
 
     def test_chat_normalizes_root_base_url_to_openai_v1(self) -> None:
@@ -139,6 +146,126 @@ class LLMClientTest(unittest.TestCase):
         self.assertEqual("{\"need_search\": false}", content)
         self.assertEqual({"type": "json_object"}, captured_payloads[0]["response_format"])
         self.assertNotIn("response_format", captured_payloads[1])
+
+    def test_chat_response_api_posts_responses_request(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_request_json(
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            payload: dict[str, Any] | None = None,
+            timeout: int | float = 30,
+        ) -> dict[str, Any]:
+            captured.update(
+                {
+                    "method": method,
+                    "url": url,
+                    "headers": headers,
+                    "payload": payload,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "output": [
+                    {
+                        "content": [
+                            {"type": "output_text", "text": " first "},
+                            {"type": "refusal", "refusal": "ignored"},
+                            {"type": "output_text", "text": ""},
+                        ]
+                    },
+                    {"content": [{"type": "output_text", "text": "second"}]},
+                ]
+            }
+
+        import ankiplugin.llm_client as llm_module
+
+        original_request_json = llm_module.request_json
+        llm_module.request_json = fake_request_json
+        try:
+            config = merged_config(
+                {
+                    "llm": {
+                        "base_url": "https://llm.example/v1/",
+                        "api_key": "secret",
+                        "api_type": "response",
+                        "model": "model-a",
+                        "temperature": 0.1,
+                        "timeout_seconds": 12,
+                    }
+                }
+            )
+            content = LLMClient(config).chat(
+                [{"role": "user", "content": "hello"}],
+                response_format={"type": "json_object"},
+            )
+        finally:
+            llm_module.request_json = original_request_json
+
+        self.assertEqual("first\nsecond", content)
+        self.assertEqual("POST", captured["method"])
+        self.assertEqual("https://llm.example/v1/responses", captured["url"])
+        self.assertEqual("Bearer secret", captured["headers"]["Authorization"])
+        self.assertEqual(
+            {
+                "model": "model-a",
+                "input": [{"role": "user", "content": "hello"}],
+                "temperature": 0.1,
+                "store": False,
+                "text": {"format": {"type": "json_object"}},
+            },
+            captured["payload"],
+        )
+        self.assertEqual(12, captured["timeout"])
+
+    def test_chat_response_api_retries_without_text_format_when_endpoint_rejects_it(self) -> None:
+        captured_payloads: list[dict[str, Any]] = []
+
+        def fake_request_json(
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            payload: dict[str, Any] | None = None,
+            timeout: int | float = 30,
+        ) -> dict[str, Any]:
+            captured_payloads.append(dict(payload or {}))
+            if len(captured_payloads) == 1:
+                raise HttpClientError(
+                    "HTTP 400 for http://llm.example/v1/responses: text.format json_object invalid"
+                )
+            return {
+                "output": [
+                    {"content": [{"type": "output_text", "text": "{\"need_search\": false}"}]}
+                ]
+            }
+
+        import ankiplugin.llm_client as llm_module
+
+        original_request_json = llm_module.request_json
+        llm_module.request_json = fake_request_json
+        try:
+            config = merged_config(
+                {
+                    "llm": {
+                        "api_key": "secret",
+                        "api_type": "response",
+                        "model": "model-a",
+                    }
+                }
+            )
+            content = LLMClient(config).chat(
+                [{"role": "user", "content": "Return JSON only: {}"}],
+                response_format={"type": "json_object"},
+            )
+        finally:
+            llm_module.request_json = original_request_json
+
+        self.assertEqual("{\"need_search\": false}", content)
+        self.assertEqual({"format": {"type": "json_object"}}, captured_payloads[0]["text"])
+        self.assertNotIn("text", captured_payloads[1])
 
 
 class SearchProviderTest(unittest.TestCase):

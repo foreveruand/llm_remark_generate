@@ -10,6 +10,7 @@ DEFAULT_CONFIG: JsonDict = {
     "llm": {
         "base_url": "https://api.openai.com/v1",
         "api_key": "",
+        "api_type": "completion",
         "model": "gpt-4.1-mini",
         "temperature": 0.2,
         "timeout_seconds": 60,
@@ -93,6 +94,8 @@ def validate_config(config: JsonDict) -> None:
         raise ConfigError("llm.base_url is required")
     if not _non_empty_string(llm.get("api_key")):
         raise ConfigError("llm.api_key is required")
+    if llm.get("api_type", "completion") not in {"completion", "response"}:
+        raise ConfigError('llm.api_type must be "completion" or "response"')
     if not _non_empty_string(llm.get("model")):
         raise ConfigError("llm.model is required")
 

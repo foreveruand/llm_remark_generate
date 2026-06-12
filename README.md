@@ -26,10 +26,14 @@ field such as `Remark`.
 
 Open the add-on config dialog in Anki and set:
 
-- `llm.base_url`, `llm.api_key`, `llm.model`
+- `llm.base_url`, `llm.api_key`, `llm.api_type`, `llm.model`
 - `search.providers`, `search.brave_api_key`, `search.tavily_api_key`
 - `mappings`, keyed by exact Anki note type name
 - `batch.enabled` and its safety limits if you want combined final generation requests
+
+`llm.api_type` defaults to `completion`, which uses the OpenAI-compatible
+`/chat/completions` endpoint. Set it to `response` to use OpenAI's `/responses`
+endpoint.
 
 Example mapping:
 

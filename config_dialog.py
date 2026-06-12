@@ -10,6 +10,7 @@ from .models import JsonDict
 def show_config_dialog(mw: Any, addon_module_name: str) -> None:
     from aqt.qt import (
         QCheckBox,
+        QComboBox,
         QDialog,
         QDialogButtonBox,
         QDoubleSpinBox,
@@ -67,6 +68,11 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             self.llm_base_url = QLineEdit(str(llm.get("base_url", "")), group)
             self.llm_api_key = QLineEdit(str(llm.get("api_key", "")), group)
             self.llm_api_key.setEchoMode(_enum_value(QLineEdit, "EchoMode", "Password"))
+            self.llm_api_type = QComboBox(group)
+            self.llm_api_type.addItem("Chat completions", "completion")
+            self.llm_api_type.addItem("Responses", "response")
+            api_type_index = self.llm_api_type.findData(str(llm.get("api_type", "completion")))
+            self.llm_api_type.setCurrentIndex(max(api_type_index, 0))
             self.llm_model = QLineEdit(str(llm.get("model", "")), group)
             self.llm_temperature = QDoubleSpinBox(group)
             self.llm_temperature.setRange(0.0, 2.0)
@@ -79,6 +85,7 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
 
             form.addRow("Base URL", self.llm_base_url)
             form.addRow("API key", self.llm_api_key)
+            form.addRow("API type", self.llm_api_type)
             form.addRow("Model", self.llm_model)
             form.addRow("Temperature", self.llm_temperature)
             form.addRow("Timeout seconds", self.llm_timeout)
@@ -220,6 +227,7 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
                 **config["llm"],
                 "base_url": self.llm_base_url.text().strip(),
                 "api_key": self.llm_api_key.text().strip(),
+                "api_type": str(self.llm_api_type.currentData() or "completion"),
                 "model": self.llm_model.text().strip(),
                 "temperature": self.llm_temperature.value(),
                 "timeout_seconds": self.llm_timeout.value(),
