@@ -10,8 +10,8 @@ field such as `Remark`.
 
 - Run from the Anki Browser on selected notes.
 - Append a new LLM remark from the card review page with the `Append LLM Remark`
-  button.
-- Stop an in-progress batch from the progress dialog.
+  button without blocking further review.
+- Stop an in-progress Browser batch from the progress dialog.
 - Configure core settings with the add-on's graphical configuration dialog.
 - Configure mappings by note type, for example `Question + Options + Answer -> Remark`.
 - Skip a Browser-selected note before any search or LLM call when the target

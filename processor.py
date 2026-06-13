@@ -392,6 +392,31 @@ def process_prepared_note(
     return NoteProcessResult(note_id=prepared.note.id, status="written")
 
 
+def generate_remark_html(
+    source_text: str,
+    config: JsonDict,
+    *,
+    llm_client: LLMClient | None = None,
+    search_providers: list[SearchProvider] | None = None,
+    cancel_requested: CancelRequested | None = None,
+) -> str:
+    llm = llm_client or LLMClient(config)
+    providers = build_search_providers(config) if search_providers is None else search_providers
+    max_results = int(config["search"].get("max_results", 5))
+    prompt_config = config["prompt"]
+
+    search_results = collect_search_results(
+        llm,
+        source_text,
+        providers,
+        max_results=max_results,
+        prompt_config=prompt_config,
+        cancel_requested=cancel_requested,
+    )
+    _raise_if_cancelled(cancel_requested)
+    return generate_explanation(llm, source_text, search_results, prompt_config)
+
+
 def ensure_search_results(
     prepared: PreparedNote,
     llm: LLMClient,
@@ -404,8 +429,30 @@ def ensure_search_results(
     if prepared.search_checked:
         return prepared.search_results
 
+    search_results = collect_search_results(
+        llm,
+        prepared.source_text,
+        search_providers,
+        max_results=max_results,
+        prompt_config=prompt_config,
+        cancel_requested=cancel_requested,
+    )
+    prepared.search_results = search_results
+    prepared.search_checked = True
+    return search_results
+
+
+def collect_search_results(
+    llm: LLMClient,
+    source_text: str,
+    search_providers: list[SearchProvider],
+    *,
+    max_results: int,
+    prompt_config: JsonDict,
+    cancel_requested: CancelRequested | None = None,
+) -> list[SearchResult]:
     _raise_if_cancelled(cancel_requested)
-    search_decision = decide_search(llm, prepared.source_text, prompt_config)
+    search_decision = decide_search(llm, source_text, prompt_config)
     _raise_if_cancelled(cancel_requested)
     search_results: list[SearchResult] = []
     if search_decision.get("need_search") and search_providers:
@@ -417,8 +464,6 @@ def ensure_search_results(
             cancel_requested=cancel_requested,
         )
 
-    prepared.search_results = search_results
-    prepared.search_checked = True
     return search_results
 
 

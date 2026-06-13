@@ -9,10 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ankiplugin import (
     REVIEWER_APPEND_COMMAND,
+    _append_llm_result_to_note,
     _append_reviewer_button_html,
+    _clear_note_in_flight,
     _current_reviewer_note_id,
     _format_batch_result,
     _is_reviewer_append_command,
+    _mark_note_in_flight,
+    _refresh_reviewer_card_if_current,
     _run_collection_op,
 )
 from ankiplugin.models import BatchResult, NoteProcessResult
@@ -47,6 +51,37 @@ class FakeCard:
 class FakeReviewer:
     def __init__(self, note_id: int | None) -> None:
         self.card = FakeCard(note_id) if note_id is not None else None
+        self.redraw_count = 0
+
+    def _redraw_current_card(self) -> None:
+        self.redraw_count += 1
+
+
+class FakeNote:
+    def __init__(self, note_id: int, fields: dict[str, str]) -> None:
+        self.id = note_id
+        self.fields = dict(fields)
+
+    def keys(self):
+        return self.fields.keys()
+
+    def __getitem__(self, field: str) -> str:
+        return self.fields[field]
+
+    def __setitem__(self, field: str, value: str) -> None:
+        self.fields[field] = value
+
+
+class FakeCollection:
+    def __init__(self, notes: list[FakeNote]) -> None:
+        self.notes = {note.id: note for note in notes}
+        self.updated_note_ids: list[int] = []
+
+    def get_note(self, note_id: int) -> FakeNote:
+        return self.notes[note_id]
+
+    def update_note(self, note: FakeNote) -> None:
+        self.updated_note_ids.append(note.id)
 
 
 class AnkiOpsTest(unittest.TestCase):
@@ -104,6 +139,47 @@ class AnkiOpsTest(unittest.TestCase):
         self.assertFalse(_is_reviewer_append_command("other"))
         self.assertEqual(123, _current_reviewer_note_id(FakeReviewer(123)))
         self.assertIsNone(_current_reviewer_note_id(FakeReviewer(None)))
+
+    def test_append_llm_result_to_note_appends_to_latest_target_field(self) -> None:
+        note = FakeNote(14, {"Remark": "<p>Existing.</p>"})
+        col = FakeCollection([note])
+
+        result = _append_llm_result_to_note(col, 14, "Remark", "<p>New.</p>")
+
+        self.assertEqual(1, result.written)
+        self.assertTrue(result.changes.note)
+        self.assertEqual([14], col.updated_note_ids)
+        self.assertEqual("<p>Existing.</p><p>New.</p>", note["Remark"])
+
+    def test_append_llm_result_to_note_reports_missing_target_field(self) -> None:
+        note = FakeNote(14, {"Other": ""})
+        col = FakeCollection([note])
+
+        result = _append_llm_result_to_note(col, 14, "Remark", "<p>New.</p>")
+
+        self.assertEqual(0, result.written)
+        self.assertEqual(1, result.failed)
+        self.assertFalse(result.changes.note)
+        self.assertEqual([], col.updated_note_ids)
+        self.assertIn("missing field: Remark", result.details[0].message)
+
+    def test_refresh_reviewer_card_only_when_same_note_is_current(self) -> None:
+        reviewer = FakeReviewer(14)
+
+        _refresh_reviewer_card_if_current(reviewer, 14)
+        reviewer.card = FakeCard(15)
+        _refresh_reviewer_card_if_current(reviewer, 14)
+
+        self.assertEqual(1, reviewer.redraw_count)
+
+    def test_note_in_flight_helpers_reject_duplicate_note(self) -> None:
+        in_flight: set[int] = set()
+
+        self.assertTrue(_mark_note_in_flight(in_flight, 14))
+        self.assertFalse(_mark_note_in_flight(in_flight, 14))
+        _clear_note_in_flight(in_flight, 14)
+
+        self.assertTrue(_mark_note_in_flight(in_flight, 14))
 
 
 if __name__ == "__main__":

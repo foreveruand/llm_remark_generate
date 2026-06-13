@@ -4,9 +4,9 @@ import time
 from threading import Event
 from typing import Any
 
-from .config import ConfigError, merged_config, validate_config
-from .models import BatchResult
-from .processor import process_notes
+from .config import ConfigError, merged_config, parse_mappings, validate_config
+from .models import BatchResult, NoteProcessResult
+from .processor import append_field_content, generate_remark_html, prepare_note, process_notes
 
 
 ADDON_NAME = "LLM Remark Generator"
@@ -161,6 +161,8 @@ def _register() -> None:
         progress_dialog.show()
         _run_collection_op(op, with_progress=False)
 
+    reviewer_append_in_flight: set[int] = set()
+
     def _run_from_reviewer(reviewer: Any) -> None:
         note_id = _current_reviewer_note_id(reviewer)
         if note_id is None:
@@ -175,24 +177,69 @@ def _register() -> None:
             return
 
         parent = getattr(reviewer, "mw", mw)
-        cancel_token = _CancellationToken()
-        progress_dialog = BatchProgressDialog(parent, 1, cancel_token)
-        progress = _progress_callback(1, progress_dialog)
-        op = CollectionOp(
-            parent=parent,
-            op=lambda col: process_notes(
-                col,
-                [note_id],
-                config,
-                progress=progress,
-                cancel_requested=cancel_token.is_cancelled,
-                append=True,
-            ),
-        )
-        op.success(lambda result: _finish_reviewer_success(progress_dialog, reviewer, result))
-        op.failure(lambda exc: _finish_failure(progress_dialog, exc))
-        progress_dialog.show()
-        _run_collection_op(op, with_progress=False)
+        taskman = getattr(mw, "taskman", None)
+        run_in_background = getattr(taskman, "run_in_background", None)
+        if not callable(run_in_background):
+            showWarning("Anki background task manager is not available.")
+            return
+        if not _mark_note_in_flight(reviewer_append_in_flight, note_id):
+            tooltip("LLM remark generation is already running for this note.")
+            return
+
+        try:
+            note = mw.col.get_note(note_id)
+            prepared_or_result = prepare_note(note, parse_mappings(config), skip_existing=False)
+        except Exception as exc:
+            _clear_note_in_flight(reviewer_append_in_flight, note_id)
+            tooltip(f"{ADDON_NAME} did not append: {exc}")
+            return
+
+        if isinstance(prepared_or_result, NoteProcessResult):
+            _clear_note_in_flight(reviewer_append_in_flight, note_id)
+            message = prepared_or_result.message or "note is not configured for LLM remarks"
+            tooltip(f"{ADDON_NAME} did not append: {message}")
+            return
+
+        source_text = prepared_or_result.source_text
+        target_field = prepared_or_result.mapping.target_field
+        tooltip("Generating LLM remark in background...")
+
+        def generate() -> str:
+            return generate_remark_html(source_text, config)
+
+        def generated(future: Any) -> None:
+            try:
+                html = future.result()
+            except Exception as exc:
+                _clear_note_in_flight(reviewer_append_in_flight, note_id)
+                tooltip(f"{ADDON_NAME} failed: {exc}")
+                return
+
+            try:
+                op = CollectionOp(
+                    parent=parent,
+                    op=lambda col: _append_llm_result_to_note(col, note_id, target_field, html),
+                )
+                op.success(
+                    lambda result: _finish_reviewer_append_success(
+                        reviewer_append_in_flight, note_id, reviewer, result
+                    )
+                )
+                op.failure(
+                    lambda exc: _finish_reviewer_append_failure(
+                        reviewer_append_in_flight, note_id, exc
+                    )
+                )
+                _run_collection_op(op, with_progress=False)
+            except Exception as exc:
+                _clear_note_in_flight(reviewer_append_in_flight, note_id)
+                tooltip(f"{ADDON_NAME} failed: {exc}")
+
+        try:
+            run_in_background(generate, generated)
+        except Exception as exc:
+            _clear_note_in_flight(reviewer_append_in_flight, note_id)
+            tooltip(f"{ADDON_NAME} failed: {exc}")
 
     def _progress_callback(total: int, progress_dialog: Any):
         last_update = 0.0
@@ -217,16 +264,27 @@ def _register() -> None:
         progress_dialog.finish()
         showWarning(f"{ADDON_NAME} failed:\n\n{exc}")
 
-    def _finish_reviewer_success(progress_dialog: Any, reviewer: Any, result: BatchResult) -> None:
-        progress_dialog.finish()
+    def _finish_reviewer_append_success(
+        in_flight_note_ids: set[int],
+        note_id: int,
+        reviewer: Any,
+        result: BatchResult,
+    ) -> None:
+        _clear_note_in_flight(in_flight_note_ids, note_id)
         if result.written:
-            _refresh_reviewer_card(reviewer)
+            _refresh_reviewer_card_if_current(reviewer, note_id)
             tooltip("LLM result appended to target field.")
             return
 
-        detail = result.details[0] if result.details else None
-        message = detail.message if detail and detail.message else _format_batch_result(result)
-        showWarning(f"{ADDON_NAME} did not append:\n\n{message}")
+        tooltip(f"{ADDON_NAME} did not append: {_reviewer_append_result_message(result)}")
+
+    def _finish_reviewer_append_failure(
+        in_flight_note_ids: set[int],
+        note_id: int,
+        exc: Exception,
+    ) -> None:
+        _clear_note_in_flight(in_flight_note_ids, note_id)
+        tooltip(f"{ADDON_NAME} failed: {exc}")
 
     def _register_reviewer_append_button() -> None:
         if Reviewer is None or getattr(Reviewer, "_llm_remark_append_button_patched", False):
@@ -278,6 +336,54 @@ def _run_collection_op(op: Any, *, with_progress: bool = True) -> None:
     op.run_in_background()
 
 
+def _append_llm_result_to_note(
+    col: Any,
+    note_id: int,
+    target_field: str,
+    html: str,
+) -> BatchResult:
+    result = BatchResult()
+    try:
+        note = col.get_note(note_id)
+        if target_field not in set(note.keys()):
+            result.add(
+                NoteProcessResult(
+                    note_id=note_id,
+                    status="failed",
+                    message=f"missing field: {target_field}",
+                )
+            )
+            return result
+
+        note[target_field] = append_field_content(note[target_field], html)
+        col.update_note(note)
+    except Exception as exc:
+        result.add(NoteProcessResult(note_id=note_id, status="failed", message=str(exc)))
+    else:
+        result.add(NoteProcessResult(note_id=note_id, status="written"))
+    return result
+
+
+def _mark_note_in_flight(in_flight_note_ids: set[int], note_id: int) -> bool:
+    if note_id in in_flight_note_ids:
+        return False
+    in_flight_note_ids.add(note_id)
+    return True
+
+
+def _clear_note_in_flight(in_flight_note_ids: set[int], note_id: int) -> None:
+    in_flight_note_ids.discard(note_id)
+
+
+def _reviewer_append_result_message(result: BatchResult) -> str:
+    detail = result.details[0] if result.details else None
+    if detail and detail.message:
+        return detail.message
+    if result.cancelled:
+        return "generation stopped before writing"
+    return "no result was written"
+
+
 def _append_reviewer_button_html(html: str) -> str:
     if REVIEWER_APPEND_COMMAND in html:
         return html
@@ -303,6 +409,11 @@ def _refresh_reviewer_card(reviewer: Any) -> None:
     redraw = getattr(reviewer, "_redraw_current_card", None)
     if callable(redraw):
         redraw()
+
+
+def _refresh_reviewer_card_if_current(reviewer: Any, note_id: int) -> None:
+    if _current_reviewer_note_id(reviewer) == note_id:
+        _refresh_reviewer_card(reviewer)
 
 
 def _format_batch_result(result: BatchResult) -> str:
