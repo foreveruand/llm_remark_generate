@@ -175,18 +175,24 @@ def _register() -> None:
             return
 
         parent = getattr(reviewer, "mw", mw)
+        cancel_token = _CancellationToken()
+        progress_dialog = BatchProgressDialog(parent, 1, cancel_token)
+        progress = _progress_callback(1, progress_dialog)
         op = CollectionOp(
             parent=parent,
             op=lambda col: process_notes(
                 col,
                 [note_id],
                 config,
+                progress=progress,
+                cancel_requested=cancel_token.is_cancelled,
                 append=True,
             ),
         )
-        op.success(lambda result: _finish_reviewer_success(reviewer, result))
-        op.failure(lambda exc: showWarning(f"{ADDON_NAME} failed:\n\n{exc}"))
-        _run_collection_op(op)
+        op.success(lambda result: _finish_reviewer_success(progress_dialog, reviewer, result))
+        op.failure(lambda exc: _finish_failure(progress_dialog, exc))
+        progress_dialog.show()
+        _run_collection_op(op, with_progress=False)
 
     def _progress_callback(total: int, progress_dialog: Any):
         last_update = 0.0
@@ -211,7 +217,8 @@ def _register() -> None:
         progress_dialog.finish()
         showWarning(f"{ADDON_NAME} failed:\n\n{exc}")
 
-    def _finish_reviewer_success(reviewer: Any, result: BatchResult) -> None:
+    def _finish_reviewer_success(progress_dialog: Any, reviewer: Any, result: BatchResult) -> None:
+        progress_dialog.finish()
         if result.written:
             _refresh_reviewer_card(reviewer)
             tooltip("LLM result appended to target field.")

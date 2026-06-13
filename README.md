@@ -31,6 +31,10 @@ Open the add-on config dialog in Anki and set:
 - `mappings`, keyed by exact Anki note type name
 - `batch.enabled` and its safety limits if you want combined final generation requests
 
+The model field can be typed manually or selected after clicking `Fetch models`,
+which calls the OpenAI-compatible `GET /v1/models` endpoint for the configured
+base URL and API key.
+
 `llm.api_type` defaults to `completion`, which uses the OpenAI-compatible
 `/chat/completions` endpoint. Set it to `response` to use OpenAI's `/responses`
 endpoint.

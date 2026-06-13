@@ -28,6 +28,22 @@ class LLMClient:
             return self._chat_response(messages, response_format=response_format)
         raise LLMError(f"unsupported LLM API type: {self.api_type}")
 
+    def list_models(self) -> list[str]:
+        try:
+            response = request_json(
+                "GET",
+                f"{self.base_url}/models",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Accept": "application/json",
+                },
+                timeout=self.timeout,
+            )
+        except HttpClientError as exc:
+            raise LLMError(str(exc)) from exc
+
+        return _model_ids(response)
+
     def _chat_completion(
         self,
         messages: list[dict[str, str]],
@@ -150,6 +166,30 @@ def _responses_response_text(response: JsonDict) -> str:
     if not texts:
         raise LLMError("LLM response output_text was empty")
     return "\n".join(texts)
+
+
+def _model_ids(response: JsonDict) -> list[str]:
+    data = response.get("data")
+    if not isinstance(data, list):
+        raise LLMError("models response did not contain a data list")
+
+    model_ids: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        stripped = model_id.strip()
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+        model_ids.append(stripped)
+
+    if not model_ids:
+        raise LLMError("models response did not contain any model IDs")
+    return model_ids
 
 
 def _normalize_base_url(base_url: str) -> str:

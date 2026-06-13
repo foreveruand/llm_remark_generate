@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from .config import ConfigError, merged_config, validate_config
+from .llm_client import LLMClient
 from .models import JsonDict
 
 
@@ -73,7 +74,19 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             self.llm_api_type.addItem("Responses", "response")
             api_type_index = self.llm_api_type.findData(str(llm.get("api_type", "completion")))
             self.llm_api_type.setCurrentIndex(max(api_type_index, 0))
-            self.llm_model = QLineEdit(str(llm.get("model", "")), group)
+            self.llm_model = QComboBox(group)
+            self.llm_model.setEditable(True)
+            current_model = str(llm.get("model", ""))
+            if current_model:
+                self.llm_model.addItem(current_model)
+            self.llm_model.setCurrentText(current_model)
+            self.fetch_models_button = QPushButton("Fetch models", group)
+            self.fetch_models_button.clicked.connect(self._fetch_models)
+            model_row = QWidget(group)
+            model_layout = QHBoxLayout(model_row)
+            model_layout.setContentsMargins(0, 0, 0, 0)
+            model_layout.addWidget(self.llm_model, 1)
+            model_layout.addWidget(self.fetch_models_button)
             self.llm_temperature = QDoubleSpinBox(group)
             self.llm_temperature.setRange(0.0, 2.0)
             self.llm_temperature.setDecimals(2)
@@ -86,7 +99,7 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             form.addRow("Base URL", self.llm_base_url)
             form.addRow("API key", self.llm_api_key)
             form.addRow("API type", self.llm_api_type)
-            form.addRow("Model", self.llm_model)
+            form.addRow("Model", model_row)
             form.addRow("Temperature", self.llm_temperature)
             form.addRow("Timeout seconds", self.llm_timeout)
             return group
@@ -221,6 +234,74 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             self.result_config = config
             self.accept()
 
+        def _fetch_models(self) -> None:
+            base_url = self.llm_base_url.text().strip()
+            api_key = self.llm_api_key.text().strip()
+            if not base_url:
+                showWarning("Base URL is required before fetching models.")
+                return
+            if not api_key:
+                showWarning("API key is required before fetching models.")
+                return
+
+            config = self._model_fetch_config(base_url, api_key)
+            taskman = getattr(mw, "taskman", None)
+            run_in_background = getattr(taskman, "run_in_background", None)
+            if not callable(run_in_background):
+                showWarning("Anki background task manager is not available.")
+                return
+
+            self.fetch_models_button.setEnabled(False)
+            self.fetch_models_button.setText("Fetching...")
+
+            def fetch() -> list[str]:
+                return LLMClient(config).list_models()
+
+            def finished(future: Any) -> None:
+                try:
+                    models = future.result()
+                except Exception as exc:
+                    self._finish_model_fetch()
+                    showWarning(f"Failed to fetch models:\n\n{exc}")
+                    return
+
+                self._set_model_choices(models, self.llm_model.currentText().strip())
+                self._finish_model_fetch()
+                showInfo(f"Loaded {len(models)} model(s).")
+
+            run_in_background(fetch, finished)
+
+        def _model_fetch_config(self, base_url: str, api_key: str) -> JsonDict:
+            config = deepcopy(self._base_config)
+            config["llm"] = {
+                **config["llm"],
+                "base_url": base_url,
+                "api_key": api_key,
+                "api_type": str(self.llm_api_type.currentData() or "completion"),
+                "model": self.llm_model.currentText().strip(),
+                "temperature": self.llm_temperature.value(),
+                "timeout_seconds": self.llm_timeout.value(),
+            }
+            return config
+
+        def _set_model_choices(self, models: list[str], current_model: str) -> None:
+            self.llm_model.clear()
+            for model in models:
+                self.llm_model.addItem(model)
+
+            if current_model:
+                index = self.llm_model.findText(current_model)
+                if index < 0:
+                    self.llm_model.insertItem(0, current_model)
+                    index = 0
+                self.llm_model.setCurrentIndex(index)
+            elif models:
+                self.llm_model.setCurrentIndex(0)
+
+        def _finish_model_fetch(self) -> None:
+            self.fetch_models_button.setEnabled(True)
+            self.fetch_models_button.setText("Fetch models")
+
         def _config_from_form(self) -> JsonDict:
             config = deepcopy(self._base_config)
             config["llm"] = {
@@ -228,7 +309,7 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
                 "base_url": self.llm_base_url.text().strip(),
                 "api_key": self.llm_api_key.text().strip(),
                 "api_type": str(self.llm_api_type.currentData() or "completion"),
-                "model": self.llm_model.text().strip(),
+                "model": self.llm_model.currentText().strip(),
                 "temperature": self.llm_temperature.value(),
                 "timeout_seconds": self.llm_timeout.value(),
             }

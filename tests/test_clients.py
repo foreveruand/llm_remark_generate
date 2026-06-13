@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ankiplugin.config import merged_config
 from ankiplugin.http_client import HttpClientError
-from ankiplugin.llm_client import LLMClient
+from ankiplugin.llm_client import LLMClient, LLMError
 from ankiplugin.search import brave as brave_module
 from ankiplugin.search import tavily as tavily_module
 from ankiplugin.search.brave import BraveSearchProvider
@@ -266,6 +266,84 @@ class LLMClientTest(unittest.TestCase):
         self.assertEqual("{\"need_search\": false}", content)
         self.assertEqual({"format": {"type": "json_object"}}, captured_payloads[0]["text"])
         self.assertNotIn("text", captured_payloads[1])
+
+    def test_list_models_uses_openai_compatible_models_endpoint(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_request_json(
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            payload: dict[str, Any] | None = None,
+            timeout: int | float = 30,
+        ) -> dict[str, Any]:
+            captured.update(
+                {
+                    "method": method,
+                    "url": url,
+                    "headers": headers,
+                    "payload": payload,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "data": [
+                    {"id": "model-a"},
+                    {"id": "model-b"},
+                    {"id": "model-a"},
+                    {"id": ""},
+                    {"object": "model"},
+                ]
+            }
+
+        import ankiplugin.llm_client as llm_module
+
+        original_request_json = llm_module.request_json
+        llm_module.request_json = fake_request_json
+        try:
+            config = merged_config(
+                {
+                    "llm": {
+                        "base_url": "https://llm.example/v1/",
+                        "api_key": "secret",
+                        "model": "model-a",
+                        "timeout_seconds": 9,
+                    }
+                }
+            )
+            models = LLMClient(config).list_models()
+        finally:
+            llm_module.request_json = original_request_json
+
+        self.assertEqual(["model-a", "model-b"], models)
+        self.assertEqual("GET", captured["method"])
+        self.assertEqual("https://llm.example/v1/models", captured["url"])
+        self.assertEqual("Bearer secret", captured["headers"]["Authorization"])
+        self.assertIsNone(captured["payload"])
+        self.assertEqual(9, captured["timeout"])
+
+    def test_list_models_rejects_empty_models_response(self) -> None:
+        def fake_request_json(
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            payload: dict[str, Any] | None = None,
+            timeout: int | float = 30,
+        ) -> dict[str, Any]:
+            return {"data": [{"object": "model"}]}
+
+        import ankiplugin.llm_client as llm_module
+
+        original_request_json = llm_module.request_json
+        llm_module.request_json = fake_request_json
+        try:
+            config = merged_config({"llm": {"api_key": "secret", "model": "model-a"}})
+            with self.assertRaisesRegex(LLMError, "model IDs"):
+                LLMClient(config).list_models()
+        finally:
+            llm_module.request_json = original_request_json
 
 
 class SearchProviderTest(unittest.TestCase):
