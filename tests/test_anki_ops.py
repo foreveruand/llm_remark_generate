@@ -16,8 +16,11 @@ from ankiplugin import (
     _format_batch_result,
     _is_reviewer_append_command,
     _mark_note_in_flight,
+    _notify_operation_did_execute,
     _refresh_reviewer_card_if_current,
+    _run_background_without_collection,
     _run_collection_op,
+    _run_query_op_without_progress,
 )
 from ankiplugin.models import BatchResult, NoteProcessResult
 
@@ -41,6 +44,46 @@ class CollectionOpWithoutProgress:
 
     def run_in_background(self) -> None:
         self.run_in_background_called = True
+
+
+class FakeQueryOp:
+    last_instance = None
+
+    def __init__(self, *, parent, op, success) -> None:
+        self.parent = parent
+        self.op = op
+        self.success = success
+        self.failure_callback = None
+        self.with_progress_called = False
+        self.run_in_background_called = False
+        FakeQueryOp.last_instance = self
+
+    def failure(self, callback):
+        self.failure_callback = callback
+        return self
+
+    def with_progress(self):
+        self.with_progress_called = True
+        return self
+
+    def run_in_background(self) -> None:
+        self.run_in_background_called = True
+
+
+class FakeTaskman:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run_in_background(self, task, on_done, *, uses_collection=True) -> None:
+        self.calls.append((task, on_done, uses_collection))
+
+
+class LegacyFakeTaskman:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run_in_background(self, task, on_done) -> None:
+        self.calls.append((task, on_done))
 
 
 class FakeCard:
@@ -76,12 +119,38 @@ class FakeCollection:
     def __init__(self, notes: list[FakeNote]) -> None:
         self.notes = {note.id: note for note in notes}
         self.updated_note_ids: list[int] = []
+        self.op_made_changes_calls = []
 
     def get_note(self, note_id: int) -> FakeNote:
         return self.notes[note_id]
 
     def update_note(self, note: FakeNote) -> None:
         self.updated_note_ids.append(note.id)
+
+    def op_made_changes(self, changes) -> bool:
+        self.op_made_changes_calls.append(changes)
+        return bool(getattr(changes, "note", False))
+
+
+class FakeMainWindow:
+    def __init__(self, col: FakeCollection) -> None:
+        self.col = col
+        self.undo_updates = 0
+
+    def update_undo_actions(self) -> None:
+        self.undo_updates += 1
+
+
+class FakeGuiHooks:
+    def __init__(self) -> None:
+        self.operation_did_execute_calls = []
+        self.state_did_reset_calls = 0
+
+    def operation_did_execute(self, changes, handler) -> None:
+        self.operation_did_execute_calls.append((changes, handler))
+
+    def state_did_reset(self) -> None:
+        self.state_did_reset_calls += 1
 
 
 class AnkiOpsTest(unittest.TestCase):
@@ -108,6 +177,38 @@ class AnkiOpsTest(unittest.TestCase):
         self.assertFalse(op.with_progress_called)
         self.assertTrue(op.run_in_background_called)
 
+    def test_runs_query_op_without_progress(self) -> None:
+        parent = object()
+
+        _run_query_op_without_progress(
+            FakeQueryOp,
+            parent=parent,
+            op=lambda col: col,
+            success=lambda result: result,
+            failure=lambda exc: exc,
+        )
+
+        op = FakeQueryOp.last_instance
+        self.assertIs(parent, op.parent)
+        self.assertFalse(op.with_progress_called)
+        self.assertTrue(op.run_in_background_called)
+        self.assertIsNotNone(op.failure_callback)
+
+    def test_runs_background_task_without_collection_when_supported(self) -> None:
+        taskman = FakeTaskman()
+
+        _run_background_without_collection(taskman, lambda: "ok", lambda future: future)
+
+        self.assertEqual(1, len(taskman.calls))
+        self.assertFalse(taskman.calls[0][2])
+
+    def test_runs_background_task_on_legacy_taskman(self) -> None:
+        taskman = LegacyFakeTaskman()
+
+        _run_background_without_collection(taskman, lambda: "ok", lambda future: future)
+
+        self.assertEqual(1, len(taskman.calls))
+
     def test_batch_result_exposes_collection_op_changes(self) -> None:
         result = BatchResult()
         result.add(NoteProcessResult(note_id=1, status="failed", message="HTTP 400"))
@@ -119,6 +220,22 @@ class AnkiOpsTest(unittest.TestCase):
 
         self.assertTrue(result.changes.note)
         self.assertEqual(1, result.count)
+
+    def test_notify_operation_did_execute_updates_undo_and_hooks(self) -> None:
+        result = BatchResult()
+        result.add(NoteProcessResult(note_id=14, status="written"))
+        col = FakeCollection([])
+        mw = FakeMainWindow(col)
+        gui_hooks = FakeGuiHooks()
+
+        _notify_operation_did_execute(mw, gui_hooks, result)
+
+        self.assertEqual(1, mw.undo_updates)
+        self.assertEqual(1, len(gui_hooks.operation_did_execute_calls))
+        self.assertTrue(gui_hooks.operation_did_execute_calls[0][0].note)
+        self.assertIsNone(gui_hooks.operation_did_execute_calls[0][1])
+        self.assertEqual(1, len(col.op_made_changes_calls))
+        self.assertEqual(1, gui_hooks.state_did_reset_calls)
 
     def test_format_batch_result_marks_cancelled_run_as_stopped(self) -> None:
         result = BatchResult(cancelled=True)

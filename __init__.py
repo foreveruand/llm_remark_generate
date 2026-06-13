@@ -45,7 +45,7 @@ def _register() -> None:
             qconnect,
         )
         from aqt.utils import askUser, showInfo, showWarning, tooltip
-        from aqt.operations import CollectionOp
+        from aqt.operations import CollectionOp, QueryOp
     except Exception:
         return
 
@@ -215,28 +215,30 @@ def _register() -> None:
                 tooltip(f"{ADDON_NAME} failed: {exc}")
                 return
 
-            try:
-                op = CollectionOp(
-                    parent=parent,
-                    op=lambda col: _append_llm_result_to_note(col, note_id, target_field, html),
-                )
-                op.success(
-                    lambda result: _finish_reviewer_append_success(
+            def write_succeeded(result: BatchResult) -> None:
+                try:
+                    _finish_reviewer_append_success(
                         reviewer_append_in_flight, note_id, reviewer, result
                     )
-                )
-                op.failure(
-                    lambda exc: _finish_reviewer_append_failure(
+                finally:
+                    _notify_operation_did_execute(mw, gui_hooks, result)
+
+            try:
+                _run_query_op_without_progress(
+                    QueryOp,
+                    parent=parent,
+                    op=lambda col: _append_llm_result_to_note(col, note_id, target_field, html),
+                    success=write_succeeded,
+                    failure=lambda exc: _finish_reviewer_append_failure(
                         reviewer_append_in_flight, note_id, exc
-                    )
+                    ),
                 )
-                _run_collection_op(op, with_progress=False)
             except Exception as exc:
                 _clear_note_in_flight(reviewer_append_in_flight, note_id)
                 tooltip(f"{ADDON_NAME} failed: {exc}")
 
         try:
-            run_in_background(generate, generated)
+            _run_background_without_collection(taskman, generate, generated)
         except Exception as exc:
             _clear_note_in_flight(reviewer_append_in_flight, note_id)
             tooltip(f"{ADDON_NAME} failed: {exc}")
@@ -334,6 +336,43 @@ def _run_collection_op(op: Any, *, with_progress: bool = True) -> None:
     if with_progress and callable(op_with_progress):
         op = op_with_progress()
     op.run_in_background()
+
+
+def _run_query_op_without_progress(
+    query_op_type: Any,
+    *,
+    parent: Any,
+    op: Any,
+    success: Any,
+    failure: Any,
+) -> None:
+    query_op = query_op_type(parent=parent, op=op, success=success)
+    query_op.failure(failure)
+    query_op.run_in_background()
+
+
+def _run_background_without_collection(taskman: Any, task: Any, on_done: Any) -> None:
+    run_in_background = taskman.run_in_background
+    try:
+        run_in_background(task, on_done, uses_collection=False)
+    except TypeError:
+        run_in_background(task, on_done)
+
+
+def _notify_operation_did_execute(mw_obj: Any, gui_hooks_obj: Any, result: BatchResult) -> None:
+    update_undo_actions = getattr(mw_obj, "update_undo_actions", None)
+    if callable(update_undo_actions):
+        update_undo_actions()
+
+    operation_did_execute = getattr(gui_hooks_obj, "operation_did_execute", None)
+    if callable(operation_did_execute):
+        operation_did_execute(result.changes, None)
+
+    col = getattr(mw_obj, "col", None)
+    op_made_changes = getattr(col, "op_made_changes", None)
+    state_did_reset = getattr(gui_hooks_obj, "state_did_reset", None)
+    if callable(op_made_changes) and callable(state_did_reset) and op_made_changes(result.changes):
+        state_did_reset()
 
 
 def _append_llm_result_to_note(
