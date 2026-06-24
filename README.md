@@ -3,8 +3,8 @@
 An Anki add-on that generates explanations for selected Browser notes or the
 current review card with an
 OpenAI-compatible LLM. It can combine multiple source fields, optionally use web
-search through Brave and Tavily, and write the final explanation into a target
-field such as `Remark`.
+search through Brave and Tavily, optionally search a local document directory,
+and write the final explanation into a target field such as `Remark`.
 
 ## Behavior
 
@@ -18,7 +18,8 @@ field such as `Remark`.
   field already has content.
 - The review-page append button does not check whether the target field already
   has content; it appends the new LLM result to the field.
-- Ask the LLM whether web search is needed, then call enabled providers when needed.
+- Let the LLM request local document search or web search during generation when needed.
+- Optionally call the configured document converter in the background before generation.
 - Write concise HTML into the configured target field.
 - Optionally combine final explanation generation for multiple notes into one LLM request.
 
@@ -28,6 +29,8 @@ Open the add-on config dialog in Anki and set:
 
 - `llm.base_url`, `llm.api_key`, `llm.api_type`, `llm.model`
 - `search.providers`, `search.brave_api_key`, `search.tavily_api_key`
+- `documents.enabled`, `documents.extract_enabled`, `documents.directory`,
+  `documents.converter_path`
 - `mappings`, keyed by exact Anki note type name
 - `batch.enabled` and its safety limits if you want combined final generation requests
 
@@ -38,6 +41,15 @@ base URL and API key.
 `llm.api_type` defaults to `completion`, which uses the OpenAI-compatible
 `/chat/completions` endpoint. Set it to `response` to use OpenAI's `/responses`
 endpoint.
+
+Local document search is disabled by default. To use it, download the converter
+executable for your platform from the GitHub release, set
+`documents.converter_path` to that executable, set `documents.directory` to your
+reference document folder, then enable `documents.enabled`. If
+`documents.extract_enabled` is checked, the add-on calls the converter in the
+background before generation and writes extracted Markdown/text into
+`<documents.directory>/.llm_remark_index`. The converter keeps source filenames
+in the generated output names.
 
 Example mapping:
 
@@ -76,6 +88,10 @@ uv run python package_addon.py
 ```
 
 The package is written to `dist/llm_remark_generator.ankiaddon`.
+Release builds also publish standalone converter executables:
+
+- `llm-document-converter`
+- `llm-document-converter.exe`
 
 ## Release
 

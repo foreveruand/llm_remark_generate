@@ -23,6 +23,16 @@ DEFAULT_CONFIG: JsonDict = {
         "max_results": 5,
         "timeout_seconds": 20,
     },
+    "documents": {
+        "enabled": False,
+        "extract_enabled": False,
+        "directory": "",
+        "converter_path": "",
+        "index_directory": "",
+        "max_results": 5,
+        "max_result_chars": 1200,
+        "max_tool_rounds": 3,
+    },
     "batch": {
         "enabled": False,
         "max_notes_per_request": 10,
@@ -37,8 +47,9 @@ DEFAULT_CONFIG: JsonDict = {
             "facts, request web search before writing the final explanation."
         ),
         "analysis_instruction": (
-            "Return JSON only: {\"need_search\": boolean, \"queries\": [string], "
-            "\"reason\": string}. Use at most 3 targeted queries."
+            "If external information is needed, return JSON only: "
+            "{\"tool\": \"local_documents\" or \"search\", \"query\": string, "
+            "\"reason\": string}. Otherwise write the final explanation directly."
         ),
         "final_instruction": (
             "Write the explanation in clear HTML suitable for an Anki field. "
@@ -111,6 +122,23 @@ def validate_config(config: JsonDict) -> None:
             raise ConfigError("search.brave_api_key is required when Brave is enabled")
         if "tavily" in providers and not _non_empty_string(search.get("tavily_api_key")):
             raise ConfigError("search.tavily_api_key is required when Tavily is enabled")
+
+    documents = _require_object(config, "documents")
+    if not isinstance(documents.get("enabled", False), bool):
+        raise ConfigError("documents.enabled must be a boolean")
+    if not isinstance(documents.get("extract_enabled", False), bool):
+        raise ConfigError("documents.extract_enabled must be a boolean")
+    if not _positive_int(documents.get("max_results")):
+        raise ConfigError("documents.max_results must be a positive integer")
+    if not _positive_int(documents.get("max_result_chars")):
+        raise ConfigError("documents.max_result_chars must be a positive integer")
+    if not _positive_int(documents.get("max_tool_rounds")):
+        raise ConfigError("documents.max_tool_rounds must be a positive integer")
+    if documents.get("enabled", False):
+        if not _non_empty_string(documents.get("directory")):
+            raise ConfigError("documents.directory is required when local documents are enabled")
+        if documents.get("extract_enabled", False) and not _non_empty_string(documents.get("converter_path")):
+            raise ConfigError("documents.converter_path is required when document extraction is enabled")
 
     batch = _require_object(config, "batch")
     if not _positive_int(batch.get("max_notes_per_request")):

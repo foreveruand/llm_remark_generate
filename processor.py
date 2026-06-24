@@ -7,6 +7,7 @@ from html import escape
 from typing import Protocol
 
 from .config import parse_mappings
+from .documents import LocalDocumentProvider
 from .llm_client import LLMClient
 from .models import BatchResult, FieldMapping, JsonDict, NoteProcessResult, SearchResult
 from .search import SearchProvider, build_search_providers, dedupe_results
@@ -43,6 +44,9 @@ class PreparedNote:
     source_text: str
     search_results: list[SearchResult] = field(default_factory=list)
     search_checked: bool = False
+    tool_results: list[SearchResult] = field(default_factory=list)
+    tool_checked: bool = False
+    explanation: str | None = None
 
 
 class BatchGenerationError(RuntimeError):
@@ -70,9 +74,13 @@ def process_notes(
     mappings = parse_mappings(config)
     llm = llm_client or LLMClient(config)
     providers = build_search_providers(config) if search_providers is None else search_providers
+    document_provider = LocalDocumentProvider.from_config(config)
+    if document_provider is not None:
+        document_provider.prepare()
     max_results = int(config["search"].get("max_results", 5))
     prompt_config = config["prompt"]
     batch_config = config.get("batch", {})
+    tool_config = config.get("documents", {})
 
     if _cancel_requested(cancel_requested):
         return BatchResult(cancelled=True)
@@ -84,8 +92,10 @@ def process_notes(
             mappings,
             llm,
             providers,
+            document_provider,
             max_results=max_results,
             prompt_config=prompt_config,
+            tool_config=tool_config,
             batch_config=batch_config,
             progress=progress,
             cancel_requested=cancel_requested,
@@ -97,8 +107,10 @@ def process_notes(
         mappings,
         llm,
         providers,
+        document_provider,
         max_results=max_results,
         prompt_config=prompt_config,
+        tool_config=tool_config,
         progress=progress,
         cancel_requested=cancel_requested,
         append=append,
@@ -111,9 +123,11 @@ def process_notes_individually(
     mappings: dict[str, FieldMapping],
     llm: LLMClient,
     providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     progress: Callable[[int, int], None] | None = None,
     cancel_requested: CancelRequested | None = None,
     append: bool = False,
@@ -132,8 +146,10 @@ def process_notes_individually(
                 mappings,
                 llm,
                 providers,
+                document_provider,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                tool_config=tool_config,
                 cancel_requested=cancel_requested,
                 append=append,
             )
@@ -154,9 +170,11 @@ def process_notes_batched(
     mappings: dict[str, FieldMapping],
     llm: LLMClient,
     providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     batch_config: JsonDict,
     progress: Callable[[int, int], None] | None = None,
     cancel_requested: CancelRequested | None = None,
@@ -187,8 +205,10 @@ def process_notes_batched(
                 result_by_note_id,
                 llm,
                 providers,
+                document_provider,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                tool_config=tool_config,
                 cancel_requested=cancel_requested,
             )
         except ProcessingCancelled:
@@ -203,8 +223,10 @@ def process_notes_batched(
                 prepared,
                 llm,
                 providers,
+                document_provider,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                tool_config=tool_config,
                 cancel_requested=cancel_requested,
             )
         except ProcessingCancelled:
@@ -225,8 +247,10 @@ def process_notes_batched(
                 result_by_note_id,
                 llm,
                 providers,
+                document_provider,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                tool_config=tool_config,
                 cancel_requested=cancel_requested,
             )
         except ProcessingCancelled:
@@ -250,8 +274,10 @@ def process_notes_batched(
                     result_by_note_id,
                     llm,
                     providers,
+                    document_provider,
                     max_results=max_results,
                     prompt_config=prompt_config,
+                    tool_config=tool_config,
                     cancel_requested=cancel_requested,
                 )
             except ProcessingCancelled:
@@ -273,8 +299,10 @@ def process_notes_batched(
                         result_by_note_id,
                         llm,
                         providers,
+                        document_provider,
                         max_results=max_results,
                         prompt_config=prompt_config,
+                        tool_config=tool_config,
                         cancel_requested=cancel_requested,
                     )
                 except ProcessingCancelled:
@@ -310,9 +338,11 @@ def process_note(
     mappings: dict[str, FieldMapping],
     llm: LLMClient,
     search_providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
     append: bool = False,
 ) -> NoteProcessResult:
@@ -325,8 +355,10 @@ def process_note(
         prepared_or_result,
         llm,
         search_providers,
+        document_provider,
         max_results=max_results,
         prompt_config=prompt_config,
+        tool_config=tool_config,
         cancel_requested=cancel_requested,
         append=append,
     )
@@ -364,9 +396,11 @@ def process_prepared_note(
     prepared: PreparedNote,
     llm: LLMClient,
     search_providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
     append: bool = False,
 ) -> NoteProcessResult:
@@ -376,12 +410,14 @@ def process_prepared_note(
         prepared,
         llm,
         search_providers,
+        document_provider,
         max_results=max_results,
         prompt_config=prompt_config,
+        tool_config=tool_config,
         cancel_requested=cancel_requested,
     )
     _raise_if_cancelled(cancel_requested)
-    explanation = generate_explanation(llm, source_text, search_results, prompt_config)
+    explanation = prepared.explanation or generate_explanation(llm, source_text, search_results, prompt_config)
     _raise_if_cancelled(cancel_requested)
     target_field = prepared.mapping.target_field
     if append:
@@ -402,69 +438,196 @@ def generate_remark_html(
 ) -> str:
     llm = llm_client or LLMClient(config)
     providers = build_search_providers(config) if search_providers is None else search_providers
+    document_provider = LocalDocumentProvider.from_config(config)
+    if document_provider is not None:
+        document_provider.prepare()
     max_results = int(config["search"].get("max_results", 5))
     prompt_config = config["prompt"]
+    tool_config = config.get("documents", {})
 
-    search_results = collect_search_results(
+    search_results, explanation = collect_tool_results(
         llm,
         source_text,
         providers,
+        document_provider,
         max_results=max_results,
         prompt_config=prompt_config,
+        tool_config=tool_config,
         cancel_requested=cancel_requested,
     )
     _raise_if_cancelled(cancel_requested)
-    return generate_explanation(llm, source_text, search_results, prompt_config)
+    return explanation or generate_explanation(llm, source_text, search_results, prompt_config)
 
 
 def ensure_search_results(
     prepared: PreparedNote,
     llm: LLMClient,
     search_providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
 ) -> list[SearchResult]:
-    if prepared.search_checked:
-        return prepared.search_results
+    if prepared.tool_checked:
+        return prepared.search_results or prepared.tool_results
 
-    search_results = collect_search_results(
+    search_results, explanation = collect_tool_results(
         llm,
         prepared.source_text,
         search_providers,
+        document_provider,
         max_results=max_results,
         prompt_config=prompt_config,
+        tool_config=tool_config,
         cancel_requested=cancel_requested,
     )
     prepared.search_results = search_results
-    prepared.search_checked = True
+    prepared.tool_results = search_results
+    prepared.tool_checked = True
+    prepared.explanation = explanation
     return search_results
 
 
-def collect_search_results(
+def collect_tool_results(
     llm: LLMClient,
     source_text: str,
     search_providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], str | None]:
     _raise_if_cancelled(cancel_requested)
-    search_decision = decide_search(llm, source_text, prompt_config)
-    _raise_if_cancelled(cancel_requested)
-    search_results: list[SearchResult] = []
-    if search_decision.get("need_search") and search_providers:
-        queries = [query for query in search_decision.get("queries", []) if isinstance(query, str) and query.strip()]
-        search_results = run_searches(
-            search_providers,
-            queries[:3],
-            max_results=max_results,
-            cancel_requested=cancel_requested,
-        )
+    return run_tool_loop(
+        llm,
+        source_text,
+        search_providers,
+        document_provider,
+        max_results=max_results,
+        prompt_config=prompt_config,
+        tool_config=tool_config,
+        cancel_requested=cancel_requested,
+    )
 
-    return search_results
+
+def run_tool_loop(
+    llm: LLMClient,
+    source_text: str,
+    search_providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
+    *,
+    max_results: int,
+    prompt_config: JsonDict,
+    tool_config: JsonDict,
+    cancel_requested: CancelRequested | None = None,
+) -> tuple[list[SearchResult], str | None]:
+    tool_results: list[SearchResult] = []
+    tool_history: list[dict[str, object]] = []
+    current_input = source_text
+    for _round in range(int(tool_config.get("max_tool_rounds", 3))):
+        _raise_if_cancelled(cancel_requested)
+        content = llm.chat(
+            [
+                {"role": "system", "content": str(prompt_config["system"])},
+                {
+                    "role": "user",
+                    "content": build_tool_prompt(prompt_config, current_input, tool_history, tool_config),
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        tool_request = _parse_tool_request(content)
+        if tool_request is None:
+            return tool_results, _content_to_final_html(content)
+        tool_type = str(tool_request.get("tool", "")).strip()
+        query = str(tool_request.get("query", "")).strip()
+        if not tool_type or not query:
+            return tool_results, None
+
+        if tool_type == "local_documents" and document_provider is not None:
+            hits = document_provider.search(query, max_results=max_results)
+            tool_results = merge_tool_results(tool_results, hits)
+            tool_history.append({"tool": tool_type, "query": query, "results": format_search_results(hits)})
+            current_input = source_text
+            continue
+
+        if tool_type in {"web_search", "search"} and search_providers:
+            hits = run_searches(
+                search_providers,
+                [query],
+                max_results=max_results,
+                cancel_requested=cancel_requested,
+            )
+            tool_results = merge_tool_results(tool_results, hits)
+            tool_history.append({"tool": tool_type, "query": query, "results": format_search_results(hits)})
+            current_input = source_text
+            continue
+
+        return tool_results, None
+
+    return tool_results, None
+
+
+def build_tool_prompt(
+    prompt_config: JsonDict,
+    source_text: str,
+    tool_history: list[dict[str, object]],
+    tool_config: JsonDict,
+) -> str:
+    sections = [
+        str(prompt_config["analysis_instruction"]),
+        "You may request one tool at a time by returning JSON: {\"tool\":\"local_documents|search\",\"query\":\"...\",\"reason\":\"...\"}.",
+        "Use local_documents for the configured document directory. Use search for web search.",
+        "Keep queries short and specific. Prefer reusing earlier query wording when possible.",
+    ]
+    if tool_history:
+        sections.append("Tool history:")
+        sections.append(json.dumps(tool_history, ensure_ascii=False))
+    sections.append("Source text:")
+    sections.append(source_text)
+    return "\n\n".join(sections)
+
+
+def _parse_tool_request(content: str) -> JsonDict | None:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if "tool" in parsed and "query" in parsed:
+        return parsed
+    if "need_search" in parsed and parsed.get("need_search"):
+        queries = parsed.get("queries", [])
+        if isinstance(queries, list) and queries:
+            first = next((query for query in queries if isinstance(query, str) and query.strip()), "")
+            if first:
+                return {"tool": "search", "query": first, "reason": parsed.get("reason", "")}
+    return None
+
+
+def _content_to_final_html(content: str) -> str | None:
+    stripped = content.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    if isinstance(parsed, dict):
+        html = parsed.get("html") or parsed.get("final") or parsed.get("answer")
+        if isinstance(html, str) and html.strip():
+            return html.strip()
+        return None
+    return stripped
+
+
+def merge_tool_results(existing: list[SearchResult], new_results: list[SearchResult]) -> list[SearchResult]:
+    return dedupe_results([*existing, *new_results], limit=50)
 
 
 def decide_search(llm: LLMClient, source_text: str, prompt_config: JsonDict) -> JsonDict:
@@ -517,7 +680,8 @@ def generate_batch_explanations(
         {
             "note_id": prepared.note.id,
             "fields": prepared.source_text,
-            "search_results": format_search_results(prepared.search_results) or "No search results were used.",
+            "search_results": format_search_results(prepared.search_results or prepared.tool_results)
+            or "No search results were used.",
         }
         for prepared in prepared_notes
     ]
@@ -604,9 +768,11 @@ def _process_prepared_notes_individually(
     result_by_note_id: dict[int, NoteProcessResult],
     llm: LLMClient,
     providers: list[SearchProvider],
+    document_provider: LocalDocumentProvider | None,
     *,
     max_results: int,
     prompt_config: JsonDict,
+    tool_config: JsonDict,
     cancel_requested: CancelRequested | None = None,
 ) -> None:
     for prepared in prepared_notes:
@@ -617,8 +783,10 @@ def _process_prepared_notes_individually(
                 prepared,
                 llm,
                 providers,
+                document_provider,
                 max_results=max_results,
                 prompt_config=prompt_config,
+                tool_config=tool_config,
                 cancel_requested=cancel_requested,
             )
         except ProcessingCancelled:
@@ -686,7 +854,9 @@ def split_prepared_notes(
 
 
 def _prepared_note_chars(prepared: PreparedNote) -> int:
-    return len(str(prepared.note.id)) + len(prepared.source_text) + len(format_search_results(prepared.search_results))
+    return len(str(prepared.note.id)) + len(prepared.source_text) + len(
+        format_search_results(prepared.search_results or prepared.tool_results)
+    )
 
 
 def _batch_enabled(batch_config: object) -> bool:

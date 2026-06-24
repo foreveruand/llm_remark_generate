@@ -13,6 +13,7 @@ INCLUDED = [
     "config_dialog.py",
     "config.py",
     "config.json",
+    "documents.py",
     "http_client.py",
     "llm_client.py",
     "manifest.json",

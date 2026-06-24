@@ -48,6 +48,7 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             content_layout = QVBoxLayout(content)
             content_layout.addWidget(self._build_llm_group())
             content_layout.addWidget(self._build_search_group())
+            content_layout.addWidget(self._build_documents_group())
             content_layout.addWidget(self._build_batch_group())
             content_layout.addWidget(self._build_mappings_group())
             content_layout.addWidget(self._build_prompt_group())
@@ -140,6 +141,37 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             form.addRow("Brave API key", self.search_brave_api_key)
             form.addRow("Max results", self.search_max_results)
             form.addRow("Timeout seconds", self.search_timeout)
+            return group
+
+        def _build_documents_group(self) -> Any:
+            documents = self._base_config["documents"]
+            group = QGroupBox("Local documents", self)
+            form = QFormLayout(group)
+
+            self.documents_enabled = QCheckBox("Enable local document search", group)
+            self.documents_enabled.setChecked(bool(documents.get("enabled", False)))
+            self.documents_extract_enabled = QCheckBox("Extract documents before generation", group)
+            self.documents_extract_enabled.setChecked(bool(documents.get("extract_enabled", False)))
+            self.documents_directory = QLineEdit(str(documents.get("directory", "")), group)
+            self.documents_converter_path = QLineEdit(str(documents.get("converter_path", "")), group)
+            self.documents_max_results = QSpinBox(group)
+            self.documents_max_results.setRange(1, 20)
+            self.documents_max_results.setValue(int(documents.get("max_results", 5)))
+            self.documents_max_result_chars = QSpinBox(group)
+            self.documents_max_result_chars.setRange(200, 10000)
+            self.documents_max_result_chars.setSingleStep(100)
+            self.documents_max_result_chars.setValue(int(documents.get("max_result_chars", 1200)))
+            self.documents_max_tool_rounds = QSpinBox(group)
+            self.documents_max_tool_rounds.setRange(1, 10)
+            self.documents_max_tool_rounds.setValue(int(documents.get("max_tool_rounds", 3)))
+
+            form.addRow(self.documents_enabled)
+            form.addRow(self.documents_extract_enabled)
+            form.addRow("Document directory", self.documents_directory)
+            form.addRow("Converter path", self.documents_converter_path)
+            form.addRow("Max results", self.documents_max_results)
+            form.addRow("Max result chars", self.documents_max_result_chars)
+            form.addRow("Max tool rounds", self.documents_max_tool_rounds)
             return group
 
         def _build_batch_group(self) -> Any:
@@ -327,6 +359,17 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
                 "brave_api_key": self.search_brave_api_key.text().strip(),
                 "max_results": self.search_max_results.value(),
                 "timeout_seconds": self.search_timeout.value(),
+            }
+
+            config["documents"] = {
+                **config["documents"],
+                "enabled": self.documents_enabled.isChecked(),
+                "extract_enabled": self.documents_extract_enabled.isChecked(),
+                "directory": self.documents_directory.text().strip(),
+                "converter_path": self.documents_converter_path.text().strip(),
+                "max_results": self.documents_max_results.value(),
+                "max_result_chars": self.documents_max_result_chars.value(),
+                "max_tool_rounds": self.documents_max_tool_rounds.value(),
             }
 
             config["batch"] = {

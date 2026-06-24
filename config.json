@@ -15,6 +15,16 @@
     "max_results": 5,
     "timeout_seconds": 20
   },
+  "documents": {
+    "enabled": false,
+    "extract_enabled": false,
+    "directory": "",
+    "converter_path": "",
+    "index_directory": "",
+    "max_results": 5,
+    "max_result_chars": 1200,
+    "max_tool_rounds": 3
+  },
   "batch": {
     "enabled": false,
     "max_notes_per_request": 10,
@@ -29,7 +39,7 @@
   },
   "prompt": {
     "system": "You are an expert tutor. Generate a concise, accurate explanation for the Anki note. If the answer depends on current or external facts, request web search before writing the final explanation.",
-    "analysis_instruction": "Return JSON only: {\"need_search\": boolean, \"queries\": [string], \"reason\": string}. Use at most 3 targeted queries.",
+    "analysis_instruction": "If external information is needed, return JSON only: {\"tool\": \"local_documents\" or \"search\", \"query\": string, \"reason\": string}. Otherwise write the final explanation directly.",
     "final_instruction": "Write the explanation in clear HTML suitable for an Anki field. Explain why the answer is correct and address likely distractors. When search results are provided, cite source titles or URLs briefly."
   }
 }

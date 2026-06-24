@@ -12,6 +12,8 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("working-directory: ankiplugin", content)
         self.assertIn("path: ankiplugin", content)
         self.assertIn("ankiplugin/dist/llm_remark_generator.ankiaddon", content)
+        self.assertIn("pyinstaller --onefile", content)
+        self.assertIn("llm-document-converter.exe", content)
 
 
 if __name__ == "__main__":

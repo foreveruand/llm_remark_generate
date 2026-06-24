@@ -16,13 +16,12 @@ on:
 permissions:
   contents: write
 
-defaults:
-  run:
-    working-directory: ankiplugin
-
 jobs:
-  build-release:
+  build-addon:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ankiplugin
 
     steps:
       - name: Checkout
@@ -45,16 +44,77 @@ jobs:
       - name: Build add-on package
         run: uv run python package_addon.py
 
-      - name: Upload package artifact
+      - name: Upload add-on artifact
         uses: actions/upload-artifact@v4
         with:
           name: llm_remark_generator
           path: ankiplugin/dist/llm_remark_generator.ankiaddon
           if-no-files-found: error
 
+  build-converter:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: llm-document-converter-linux
+            executable: llm-document-converter
+          - os: windows-latest
+            artifact: llm-document-converter-windows
+            executable: llm-document-converter.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ankiplugin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          path: ankiplugin
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
+      - name: Build converter executable
+        run: pyinstaller --onefile --name llm-document-converter converter/document_converter.py
+
+      - name: Stage converter executable
+        shell: bash
+        run: |
+          mkdir -p dist/converter
+          cp "dist/${{ matrix.executable }}" "dist/converter/${{ matrix.executable }}"
+
+      - name: Upload converter artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ankiplugin/dist/converter/${{ matrix.executable }}
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - build-addon
+      - build-converter
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           name: ${{ github.event.inputs.release_name || github.event.inputs.tag || github.ref_name }}
-          files: ankiplugin/dist/llm_remark_generator.ankiaddon
+          files: |
+            release-assets/llm_remark_generator/llm_remark_generator.ankiaddon
+            release-assets/llm-document-converter-linux/llm-document-converter
+            release-assets/llm-document-converter-windows/llm-document-converter.exe

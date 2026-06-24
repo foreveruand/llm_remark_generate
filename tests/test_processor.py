@@ -72,6 +72,26 @@ class FakeSearchProvider:
         ]
 
 
+class FakeDocumentProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self.prepare_calls = 0
+
+    def prepare(self) -> None:
+        self.prepare_calls += 1
+
+    def search(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
+        self.calls.append((query, max_results or 0))
+        return [
+            SearchResult(
+                title="Local manual.md",
+                url="/docs/.llm_remark_index/manual.md",
+                content="AVC control strategy details from local manual.",
+                provider="local_documents",
+            )
+        ]
+
+
 def test_config() -> dict[str, Any]:
     return merged_config(
         {
@@ -136,12 +156,7 @@ class ProcessorTest(unittest.TestCase):
             },
         )
         col = FakeCollection([note])
-        llm = FakeLLM(
-            [
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
-                "<p>Four is correct.</p>",
-            ]
-        )
+        llm = FakeLLM(["<p>Four is correct.</p>"])
 
         result = process_notes(col, [14], test_config(), llm_client=llm, search_providers=[], append=True)
 
@@ -149,7 +164,7 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual(0, result.skipped_existing)
         self.assertEqual([14], col.updated_note_ids)
         self.assertEqual("<p>Existing explanation.</p><p>Four is correct.</p>", note["Remark"])
-        self.assertEqual(2, len(llm.calls))
+        self.assertEqual(1, len(llm.calls))
 
     def test_generates_explanation_with_llm_selected_search(self) -> None:
         note = FakeNote(
@@ -185,6 +200,43 @@ class ProcessorTest(unittest.TestCase):
         self.assertIn("Answer:\nA", final_prompt)
         self.assertIn("France facts", final_prompt)
 
+    def test_generates_explanation_with_llm_selected_local_documents(self) -> None:
+        note = FakeNote(
+            15,
+            "Choice",
+            {
+                "Question": "How should AVC produce a control strategy?",
+                "Options": "A. Configure transformer strategy\nB. Ignore topology",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([note])
+        llm = FakeLLM(
+            [
+                '{"tool": "local_documents", "query": "AVC control strategy", "reason": "check manual"}',
+                "<p>Use the AVC manual guidance.</p>",
+            ]
+        )
+        documents = FakeDocumentProvider()
+
+        import ankiplugin.processor as processor_module
+
+        original_from_config = processor_module.LocalDocumentProvider.from_config
+        processor_module.LocalDocumentProvider.from_config = classmethod(lambda _cls, _config: documents)
+        try:
+            config = test_config()
+            config["documents"].update({"enabled": True, "directory": "/tmp/docs"})
+            result = process_notes(col, [15], config, llm_client=llm, search_providers=[])
+        finally:
+            processor_module.LocalDocumentProvider.from_config = original_from_config
+
+        self.assertEqual(1, result.written)
+        self.assertEqual("<p>Use the AVC manual guidance.</p>", note["Remark"])
+        self.assertEqual([("AVC control strategy", 2)], documents.calls)
+        final_prompt = llm.calls[1]["messages"][1]["content"]
+        self.assertIn("Local manual.md", final_prompt)
+
     def test_invalid_search_decision_falls_back_to_no_search(self) -> None:
         note = FakeNote(
             3,
@@ -197,7 +249,7 @@ class ProcessorTest(unittest.TestCase):
             },
         )
         col = FakeCollection([note])
-        llm = FakeLLM(["not json", "<p>Four is correct.</p>"])
+        llm = FakeLLM(["<p>Four is correct.</p>"])
         search = FakeSearchProvider()
 
         result = process_notes(col, [3], test_config(), llm_client=llm, search_providers=[search])
@@ -205,6 +257,26 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual(1, result.written)
         self.assertEqual("<p>Four is correct.</p>", note["Remark"])
         self.assertEqual([], search.calls)
+
+    def test_non_tool_json_falls_back_to_final_generation(self) -> None:
+        note = FakeNote(
+            16,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([note])
+        llm = FakeLLM(['{"need_search": false, "queries": [], "reason": "simple math"}', "<p>Four is correct.</p>"])
+
+        result = process_notes(col, [16], test_config(), llm_client=llm, search_providers=[])
+
+        self.assertEqual(1, result.written)
+        self.assertEqual("<p>Four is correct.</p>", note["Remark"])
+        self.assertEqual(2, len(llm.calls))
 
     def test_individual_processing_stops_after_current_note_when_cancelled(self) -> None:
         first = FakeNote(
@@ -228,12 +300,7 @@ class ProcessorTest(unittest.TestCase):
             },
         )
         col = FakeCollection([first, second])
-        llm = FakeLLM(
-            [
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
-                "<p>Four is correct.</p>",
-            ]
-        )
+        llm = FakeLLM(["<p>Four is correct.</p>"])
         stopped = False
 
         def progress(current: int, _total: int) -> None:
@@ -257,7 +324,7 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual([10], col.updated_note_ids)
         self.assertEqual("<p>Four is correct.</p>", first["Remark"])
         self.assertEqual("", second["Remark"])
-        self.assertEqual(2, len(llm.calls))
+        self.assertEqual(1, len(llm.calls))
 
     def test_batch_combines_final_generation_for_multiple_notes(self) -> None:
         first = FakeNote(
@@ -283,8 +350,8 @@ class ProcessorTest(unittest.TestCase):
         col = FakeCollection([first, second])
         llm = FakeLLM(
             [
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                "<p>Four is correct.</p>",
+                "<p>Six is correct.</p>",
                 (
                     '{"results":['
                     '{"note_id":4,"html":"<p>Four is correct.</p>"},'
@@ -330,7 +397,7 @@ class ProcessorTest(unittest.TestCase):
             },
         )
         col = FakeCollection([first, second])
-        llm = FakeLLM(['{"need_search": false, "queries": [], "reason": "simple math"}'])
+        llm = FakeLLM(["<p>Four is correct.</p>"])
 
         result = process_notes(
             col,
@@ -373,8 +440,8 @@ class ProcessorTest(unittest.TestCase):
         col = FakeCollection([first, second])
         llm = FakeLLM(
             [
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                "<p>Four is correct.</p>",
+                "<p>Six is correct.</p>",
                 '{"results":[{"note_id":6,"html":"<p>Four is correct.</p>"}]}',
             ]
         )
@@ -411,8 +478,8 @@ class ProcessorTest(unittest.TestCase):
         col = FakeCollection([first, second])
         llm = FakeLLM(
             [
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
-                '{"need_search": false, "queries": [], "reason": "simple math"}',
+                "<p>Four is correct.</p>",
+                "<p>Six is correct.</p>",
                 "not json",
                 "<p>Four is correct.</p>",
                 "<p>Six is correct.</p>",
@@ -425,9 +492,9 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual([8, 9], col.updated_note_ids)
         self.assertEqual("<p>Four is correct.</p>", first["Remark"])
         self.assertEqual("<p>Six is correct.</p>", second["Remark"])
-        self.assertEqual(5, len(llm.calls))
-        self.assertIsNone(llm.calls[3]["response_format"])
-        self.assertIsNone(llm.calls[4]["response_format"])
+        self.assertEqual(3, len(llm.calls))
+        self.assertEqual("<p>Four is correct.</p>", first["Remark"])
+        self.assertEqual("<p>Six is correct.</p>", second["Remark"])
 
 
 if __name__ == "__main__":
