@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from .config import ConfigError, merged_config, validate_config
+from .documents import DocumentError, document_settings, run_converter, index_plain_text_files
 from .llm_client import LLMClient
 from .models import JsonDict
 
@@ -150,9 +152,14 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
 
             self.documents_enabled = QCheckBox("Enable local document search", group)
             self.documents_enabled.setChecked(bool(documents.get("enabled", False)))
-            self.documents_extract_enabled = QCheckBox("Extract documents before generation", group)
-            self.documents_extract_enabled.setChecked(bool(documents.get("extract_enabled", False)))
             self.documents_directory = QLineEdit(str(documents.get("directory", "")), group)
+            self.extract_documents_button = QPushButton("Extract documents", group)
+            self.extract_documents_button.clicked.connect(self._extract_documents)
+            directory_row = QWidget(group)
+            directory_layout = QHBoxLayout(directory_row)
+            directory_layout.setContentsMargins(0, 0, 0, 0)
+            directory_layout.addWidget(self.documents_directory, 1)
+            directory_layout.addWidget(self.extract_documents_button)
             self.documents_converter_path = QLineEdit(str(documents.get("converter_path", "")), group)
             self.documents_max_results = QSpinBox(group)
             self.documents_max_results.setRange(1, 20)
@@ -166,8 +173,7 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             self.documents_max_tool_rounds.setValue(int(documents.get("max_tool_rounds", 3)))
 
             form.addRow(self.documents_enabled)
-            form.addRow(self.documents_extract_enabled)
-            form.addRow("Document directory", self.documents_directory)
+            form.addRow("Document directory", directory_row)
             form.addRow("Converter path", self.documents_converter_path)
             form.addRow("Max results", self.documents_max_results)
             form.addRow("Max result chars", self.documents_max_result_chars)
@@ -364,7 +370,6 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
             config["documents"] = {
                 **config["documents"],
                 "enabled": self.documents_enabled.isChecked(),
-                "extract_enabled": self.documents_extract_enabled.isChecked(),
                 "directory": self.documents_directory.text().strip(),
                 "converter_path": self.documents_converter_path.text().strip(),
                 "max_results": self.documents_max_results.value(),
@@ -388,6 +393,55 @@ def show_config_dialog(mw: Any, addon_module_name: str) -> None:
                 "final_instruction": self.prompt_final.toPlainText().strip(),
             }
             return config
+
+        def _extract_documents(self) -> None:
+            directory = self.documents_directory.text().strip()
+            converter_path = self.documents_converter_path.text().strip()
+            if not directory:
+                showWarning("Document directory is required before extraction.")
+                return
+            if not Path(directory).expanduser().is_dir():
+                showWarning(f"Document directory does not exist:\n\n{directory}")
+                return
+            if not converter_path:
+                showWarning("Converter path is required before extraction.")
+                return
+            if not Path(converter_path).expanduser().exists():
+                showWarning(f"Document converter does not exist:\n\n{converter_path}")
+                return
+
+            taskman = getattr(mw, "taskman", None)
+            run_in_background = getattr(taskman, "run_in_background", None)
+            if not callable(run_in_background):
+                showWarning("Anki background task manager is not available.")
+                return
+
+            config = self._config_from_form()
+            settings = document_settings(config)
+            self.extract_documents_button.setEnabled(False)
+            self.extract_documents_button.setText("Extracting...")
+
+            def extract() -> None:
+                if not settings.directory.is_dir():
+                    raise DocumentError(f"document directory does not exist: {settings.directory}")
+                settings.index_directory.mkdir(parents=True, exist_ok=True)
+                run_converter(settings)
+                index_plain_text_files(settings)
+
+            def finished(future: Any) -> None:
+                self._finish_document_extract()
+                try:
+                    future.result()
+                except Exception as exc:
+                    showWarning(f"Document extraction failed:\n\n{exc}")
+                    return
+                showInfo(f"Documents extracted to:\n\n{settings.index_directory}")
+
+            run_in_background(extract, finished)
+
+        def _finish_document_extract(self) -> None:
+            self.extract_documents_button.setEnabled(True)
+            self.extract_documents_button.setText("Extract documents")
 
         def _mappings_from_table(self) -> JsonDict:
             mappings: JsonDict = {}

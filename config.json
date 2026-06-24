@@ -17,7 +17,6 @@
   },
   "documents": {
     "enabled": false,
-    "extract_enabled": false,
     "directory": "",
     "converter_path": "",
     "index_directory": "",
@@ -39,7 +38,7 @@
   },
   "prompt": {
     "system": "You are an expert tutor. Generate a concise, accurate explanation for the Anki note. If the answer depends on current or external facts, request web search before writing the final explanation.",
-    "analysis_instruction": "If external information is needed, return JSON only: {\"tool\": \"local_documents\" or \"search\", \"query\": string, \"reason\": string}. Otherwise write the final explanation directly.",
+    "analysis_instruction": "If external information is needed, return JSON only: {\"tool\": \"local_documents\" or \"search\", \"action\": \"list_documents\" or \"search\", \"query\": string, \"document\": optional string, \"reason\": string}. Otherwise write the final explanation directly.",
     "final_instruction": "Write the explanation in clear HTML suitable for an Anki field. Explain why the answer is correct and address likely distractors. When search results are provided, cite source titles or URLs briefly."
   }
 }

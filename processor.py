@@ -75,8 +75,6 @@ def process_notes(
     llm = llm_client or LLMClient(config)
     providers = build_search_providers(config) if search_providers is None else search_providers
     document_provider = LocalDocumentProvider.from_config(config)
-    if document_provider is not None:
-        document_provider.prepare()
     max_results = int(config["search"].get("max_results", 5))
     prompt_config = config["prompt"]
     batch_config = config.get("batch", {})
@@ -439,8 +437,6 @@ def generate_remark_html(
     llm = llm_client or LLMClient(config)
     providers = build_search_providers(config) if search_providers is None else search_providers
     document_provider = LocalDocumentProvider.from_config(config)
-    if document_provider is not None:
-        document_provider.prepare()
     max_results = int(config["search"].get("max_results", 5))
     prompt_config = config["prompt"]
     tool_config = config.get("documents", {})
@@ -544,14 +540,29 @@ def run_tool_loop(
         if tool_request is None:
             return tool_results, _content_to_final_html(content)
         tool_type = str(tool_request.get("tool", "")).strip()
+        action = str(tool_request.get("action", "")).strip() or "search"
         query = str(tool_request.get("query", "")).strip()
-        if not tool_type or not query:
+        document = str(tool_request.get("document", "")).strip()
+        if not tool_type:
+            return tool_results, None
+        if not query and not (tool_type == "local_documents" and action == "list_documents"):
             return tool_results, None
 
         if tool_type == "local_documents" and document_provider is not None:
-            hits = document_provider.search(query, max_results=max_results)
-            tool_results = merge_tool_results(tool_results, hits)
-            tool_history.append({"tool": tool_type, "query": query, "results": format_search_results(hits)})
+            if action == "list_documents":
+                hits = document_provider.list_documents(query, max_results=max_results)
+            else:
+                hits = document_provider.search(query, document=document or None, max_results=max_results)
+                tool_results = merge_tool_results(tool_results, hits)
+            history_item: dict[str, object] = {
+                "tool": tool_type,
+                "action": action,
+                "query": query,
+                "results": format_search_results(hits),
+            }
+            if document:
+                history_item["document"] = document
+            tool_history.append(history_item)
             current_input = source_text
             continue
 
@@ -580,8 +591,18 @@ def build_tool_prompt(
 ) -> str:
     sections = [
         str(prompt_config["analysis_instruction"]),
-        "You may request one tool at a time by returning JSON: {\"tool\":\"local_documents|search\",\"query\":\"...\",\"reason\":\"...\"}.",
-        "Use local_documents for the configured document directory. Use search for web search.",
+        (
+            "You may request one tool at a time by returning JSON: "
+            "{\"tool\":\"local_documents|search\",\"action\":\"search|list_documents\","
+            "\"query\":\"...\",\"document\":\"optional document filename or unique fragment\","
+            "\"reason\":\"...\"}."
+        ),
+        (
+            "For local_documents, use action=list_documents with a short keyword or empty query "
+            "to find candidate filenames, then use action=search with query and document when a "
+            "filename or unique filename fragment is known."
+        ),
+        "Use search for web search. Prefer explicit local document names instead of blind global document searches.",
         "Keep queries short and specific. Prefer reusing earlier query wording when possible.",
     ]
     if tool_history:
@@ -599,7 +620,7 @@ def _parse_tool_request(content: str) -> JsonDict | None:
         return None
     if not isinstance(parsed, dict):
         return None
-    if "tool" in parsed and "query" in parsed:
+    if "tool" in parsed and ("query" in parsed or parsed.get("action") == "list_documents"):
         return parsed
     if "need_search" in parsed and parsed.get("need_search"):
         queries = parsed.get("queries", [])
@@ -878,6 +899,20 @@ def format_search_results(results: list[SearchResult]) -> str:
     lines = []
     for index, result in enumerate(results, start=1):
         content = result.content.strip()
+        if result.provider == "local_documents":
+            result_lines = [
+                f"[{index}] {escape(result.title)}",
+                f"Provider: {escape(result.provider)}",
+                f"Document: {escape(result.title)}",
+                f"Path: {escape(result.url)}",
+                f"Snippet: {escape(content)}",
+            ]
+            if result.score is not None:
+                result_lines.append(f"Score: {result.score:.2f}")
+            lines.append(
+                "\n".join(result_lines)
+            )
+            continue
         lines.append(
             "\n".join(
                 [

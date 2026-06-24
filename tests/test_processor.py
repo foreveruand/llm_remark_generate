@@ -74,20 +74,42 @@ class FakeSearchProvider:
 
 class FakeDocumentProvider:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, str, int]] = []
+        self.list_calls: list[tuple[str, int]] = []
         self.prepare_calls = 0
 
     def prepare(self) -> None:
         self.prepare_calls += 1
 
-    def search(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
-        self.calls.append((query, max_results or 0))
+    def list_documents(self, query: str = "", *, max_results: int | None = None) -> list[SearchResult]:
+        self.prepare()
+        self.list_calls.append((query, max_results or 0))
+        return [
+            SearchResult(
+                title="Local manual.md",
+                url="/docs/.llm_remark_index/manual.md",
+                content="AVC local manual candidate.",
+                provider="local_documents",
+                score=1.0,
+            )
+        ]
+
+    def search(
+        self,
+        query: str,
+        *,
+        document: str | None = None,
+        max_results: int | None = None,
+    ) -> list[SearchResult]:
+        self.prepare()
+        self.calls.append((query, document or "", max_results or 0))
         return [
             SearchResult(
                 title="Local manual.md",
                 url="/docs/.llm_remark_index/manual.md",
                 content="AVC control strategy details from local manual.",
                 provider="local_documents",
+                score=3.0,
             )
         ]
 
@@ -233,9 +255,84 @@ class ProcessorTest(unittest.TestCase):
 
         self.assertEqual(1, result.written)
         self.assertEqual("<p>Use the AVC manual guidance.</p>", note["Remark"])
-        self.assertEqual([("AVC control strategy", 2)], documents.calls)
+        self.assertEqual([("AVC control strategy", "", 2)], documents.calls)
+        self.assertEqual(1, documents.prepare_calls)
         final_prompt = llm.calls[1]["messages"][1]["content"]
         self.assertIn("Local manual.md", final_prompt)
+
+    def test_local_document_tool_can_list_then_search_specific_document(self) -> None:
+        note = FakeNote(
+            17,
+            "Choice",
+            {
+                "Question": "How should AVC produce a control strategy?",
+                "Options": "A. Configure transformer strategy\nB. Ignore topology",
+                "Answer": "A",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([note])
+        llm = FakeLLM(
+            [
+                (
+                    '{"tool": "local_documents", "action": "list_documents", '
+                    '"query": "AVC", "reason": "find manual"}'
+                ),
+                (
+                    '{"tool": "local_documents", "action": "search", '
+                    '"query": "control strategy", "document": "manual", "reason": "read manual"}'
+                ),
+                "<p>Use the AVC manual guidance.</p>",
+            ]
+        )
+        documents = FakeDocumentProvider()
+
+        import ankiplugin.processor as processor_module
+
+        original_from_config = processor_module.LocalDocumentProvider.from_config
+        processor_module.LocalDocumentProvider.from_config = classmethod(lambda _cls, _config: documents)
+        try:
+            config = test_config()
+            config["documents"].update({"enabled": True, "directory": "/tmp/docs"})
+            result = process_notes(col, [17], config, llm_client=llm, search_providers=[])
+        finally:
+            processor_module.LocalDocumentProvider.from_config = original_from_config
+
+        self.assertEqual(1, result.written)
+        self.assertEqual([("AVC", 2)], documents.list_calls)
+        self.assertEqual([("control strategy", "manual", 2)], documents.calls)
+        final_prompt = llm.calls[2]["messages"][1]["content"]
+        self.assertIn("Document: Local manual.md", final_prompt)
+
+    def test_generation_does_not_prepare_documents_before_needed(self) -> None:
+        note = FakeNote(
+            18,
+            "Choice",
+            {
+                "Question": "2 + 2 = ?",
+                "Options": "A. 3\nB. 4",
+                "Answer": "B",
+                "Remark": "",
+            },
+        )
+        col = FakeCollection([note])
+        llm = FakeLLM(["<p>Four is correct.</p>"])
+        documents = FakeDocumentProvider()
+
+        import ankiplugin.processor as processor_module
+
+        original_from_config = processor_module.LocalDocumentProvider.from_config
+        processor_module.LocalDocumentProvider.from_config = classmethod(lambda _cls, _config: documents)
+        try:
+            config = test_config()
+            config["documents"].update({"enabled": True, "directory": "/tmp/docs"})
+            result = process_notes(col, [18], config, llm_client=llm, search_providers=[])
+        finally:
+            processor_module.LocalDocumentProvider.from_config = original_from_config
+
+        self.assertEqual(1, result.written)
+        self.assertEqual(0, documents.prepare_calls)
+        self.assertEqual([], documents.calls)
 
     def test_invalid_search_decision_falls_back_to_no_search(self) -> None:
         note = FakeNote(

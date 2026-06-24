@@ -25,7 +25,6 @@ DEFAULT_CONFIG: JsonDict = {
     },
     "documents": {
         "enabled": False,
-        "extract_enabled": False,
         "directory": "",
         "converter_path": "",
         "index_directory": "",
@@ -48,7 +47,8 @@ DEFAULT_CONFIG: JsonDict = {
         ),
         "analysis_instruction": (
             "If external information is needed, return JSON only: "
-            "{\"tool\": \"local_documents\" or \"search\", \"query\": string, "
+            "{\"tool\": \"local_documents\" or \"search\", \"action\": \"list_documents\" or \"search\", "
+            "\"query\": string, \"document\": optional string, "
             "\"reason\": string}. Otherwise write the final explanation directly."
         ),
         "final_instruction": (
@@ -126,8 +126,6 @@ def validate_config(config: JsonDict) -> None:
     documents = _require_object(config, "documents")
     if not isinstance(documents.get("enabled", False), bool):
         raise ConfigError("documents.enabled must be a boolean")
-    if not isinstance(documents.get("extract_enabled", False), bool):
-        raise ConfigError("documents.extract_enabled must be a boolean")
     if not _positive_int(documents.get("max_results")):
         raise ConfigError("documents.max_results must be a positive integer")
     if not _positive_int(documents.get("max_result_chars")):
@@ -137,8 +135,6 @@ def validate_config(config: JsonDict) -> None:
     if documents.get("enabled", False):
         if not _non_empty_string(documents.get("directory")):
             raise ConfigError("documents.directory is required when local documents are enabled")
-        if documents.get("extract_enabled", False) and not _non_empty_string(documents.get("converter_path")):
-            raise ConfigError("documents.converter_path is required when document extraction is enabled")
 
     batch = _require_object(config, "batch")
     if not _positive_int(batch.get("max_notes_per_request")):

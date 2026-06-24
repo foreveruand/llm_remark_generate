@@ -111,6 +111,28 @@ def extract_html_text(source: Path) -> str:
 
 
 def extract_pdf_text(source: Path) -> str:
+    text = extract_pdf_text_with_pymupdf(source)
+    if text.strip():
+        return text
+    return extract_pdf_text_fallback(source)
+
+
+def extract_pdf_text_with_pymupdf(source: Path) -> str:
+    try:
+        import fitz
+    except ImportError:
+        return ""
+
+    parts: list[str] = []
+    with fitz.open(source) as document:
+        for page in document:
+            text = page.get_text("text", sort=True)
+            if text.strip():
+                parts.append(text)
+    return "\n\n".join(parts)
+
+
+def extract_pdf_text_fallback(source: Path) -> str:
     data = source.read_bytes()
     chunks: list[str] = []
     for match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", data, re.DOTALL):

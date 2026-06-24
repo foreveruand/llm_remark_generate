@@ -34,7 +34,6 @@ class DocumentError(RuntimeError):
 @dataclass(frozen=True)
 class DocumentSettings:
     enabled: bool
-    extract_enabled: bool
     directory: Path
     converter_path: Path | None
     index_directory: Path
@@ -52,7 +51,6 @@ def document_settings(config: JsonDict) -> DocumentSettings:
     converter_path = Path(converter_raw).expanduser() if converter_raw else None
     return DocumentSettings(
         enabled=bool(raw.get("enabled", False)),
-        extract_enabled=bool(raw.get("extract_enabled", False)),
         directory=directory,
         converter_path=converter_path,
         index_directory=index_directory,
@@ -79,17 +77,40 @@ class LocalDocumentProvider:
         if not self.settings.enabled:
             return
         if not self.settings.directory.is_dir():
-            raise DocumentError(f"document directory does not exist: {self.settings.directory}")
+            return
         self.settings.index_directory.mkdir(parents=True, exist_ok=True)
-        if self.settings.extract_enabled:
-            run_converter(self.settings)
         index_plain_text_files(self.settings)
 
-    def search(self, query: str, *, max_results: int | None = None) -> list[SearchResult]:
+    def extract_documents(self) -> None:
+        if not self.settings.directory.is_dir():
+            raise DocumentError(f"document directory does not exist: {self.settings.directory}")
+        self.settings.index_directory.mkdir(parents=True, exist_ok=True)
+        run_converter(self.settings)
+        index_plain_text_files(self.settings)
+
+    def list_documents(self, query: str = "", *, max_results: int | None = None) -> list[SearchResult]:
+        self.prepare()
+        limit = max_results or self.settings.max_results
+        return list_index_documents(
+            self.settings.index_directory,
+            query,
+            max_results=limit,
+            max_result_chars=self.settings.max_result_chars,
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        document: str | None = None,
+        max_results: int | None = None,
+    ) -> list[SearchResult]:
+        self.prepare()
         limit = max_results or self.settings.max_results
         return search_index(
             self.settings.index_directory,
             query,
+            document=document,
             max_results=limit,
             max_result_chars=self.settings.max_result_chars,
         )
@@ -132,6 +153,8 @@ def index_plain_text_files(settings: DocumentSettings) -> None:
     manifest = _load_manifest(settings.index_directory / MANIFEST_NAME)
     changed = False
     for source in _iter_source_files(settings.directory):
+        if _is_relative_to(source, settings.index_directory):
+            continue
         if source.suffix.lower() not in TEXT_INDEX_SUFFIXES:
             continue
         key = _source_key(settings.directory, source)
@@ -151,6 +174,7 @@ def search_index(
     index_directory: Path,
     query: str,
     *,
+    document: str | None = None,
     max_results: int,
     max_result_chars: int,
 ) -> list[SearchResult]:
@@ -161,8 +185,15 @@ def search_index(
     if not terms:
         return []
 
+    index_files = _iter_index_files(index_directory)
+    if document and document.strip():
+        matched = _match_index_documents(index_files, document)
+        if len(matched) != 1:
+            return _document_candidate_results(matched, max_results=max_results)
+        index_files = matched
+
     candidates: list[tuple[int, SearchResult]] = []
-    for path in sorted(_iter_index_files(index_directory), key=lambda item: str(item).lower()):
+    for path in sorted(index_files, key=lambda item: str(item).lower()):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -170,8 +201,7 @@ def search_index(
         score, snippet = _match_text(text, terms, max_result_chars=max_result_chars)
         if score <= 0:
             continue
-        title = path.name
-        source = _source_from_index_text(text) or title
+        source = _document_name_from_index(path, text)
         candidates.append(
             (
                 score,
@@ -179,6 +209,45 @@ def search_index(
                     title=source,
                     url=str(path),
                     content=snippet,
+                    provider="local_documents",
+                    score=float(score),
+                ),
+            )
+        )
+
+    candidates.sort(key=lambda item: (-item[0], item[1].title.lower()))
+    return [result for _score, result in candidates[:max_results]]
+
+
+def list_index_documents(
+    index_directory: Path,
+    query: str = "",
+    *,
+    max_results: int,
+    max_result_chars: int,
+) -> list[SearchResult]:
+    if not index_directory.is_dir():
+        return []
+
+    terms = _query_terms(query)
+    candidates: list[tuple[int, SearchResult]] = []
+    for path in sorted(_iter_index_files(index_directory), key=lambda item: str(item).lower()):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        document = _document_name_from_index(path, text)
+        haystack = f"{document}\n{text[: max_result_chars * 2]}".lower()
+        score = 1 if not terms else sum(haystack.count(term) for term in terms)
+        if terms and score <= 0:
+            continue
+        candidates.append(
+            (
+                score,
+                SearchResult(
+                    title=document,
+                    url=str(path),
+                    content=_clean_snippet(text[:max_result_chars]),
                     provider="local_documents",
                     score=float(score),
                 ),
@@ -242,13 +311,59 @@ def _clean_snippet(text: str) -> str:
 
 
 def _source_from_index_text(text: str) -> str | None:
+    title: str | None = None
     for line in text.splitlines()[:8]:
         stripped = line.strip()
         if stripped.startswith("Source:"):
             return stripped.removeprefix("Source:").strip()
-        if stripped.startswith("# "):
-            return stripped.removeprefix("# ").strip()
-    return None
+        if title is None and stripped.startswith("# "):
+            title = stripped.removeprefix("# ").strip()
+    return title
+
+
+def _document_name_from_index(path: Path, text: str) -> str:
+    source = _source_from_index_text(text)
+    if source:
+        return Path(source).name
+    return path.name.removesuffix(path.suffix)
+
+
+def _match_index_documents(index_files: list[Path], document: str) -> list[Path]:
+    needle = document.strip().lower()
+    if not needle:
+        return []
+
+    matches: list[Path] = []
+    for path in index_files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        document_name = _document_name_from_index(path, text)
+        source = _source_from_index_text(text) or document_name
+        if needle in document_name.lower() or needle in source.lower() or needle in path.name.lower():
+            matches.append(path)
+    return sorted(matches, key=lambda item: str(item).lower())
+
+
+def _document_candidate_results(paths: list[Path], *, max_results: int) -> list[SearchResult]:
+    results: list[SearchResult] = []
+    for path in paths[:max_results]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        document = _document_name_from_index(path, text)
+        results.append(
+            SearchResult(
+                title=document,
+                url=str(path),
+                content=f"Multiple documents matched. Candidate document: {document}",
+                provider="local_documents",
+                score=0.0,
+            )
+        )
+    return results
 
 
 def _index_filename(root: Path, source: Path, suffix: str) -> str:
@@ -262,6 +377,14 @@ def _source_key(root: Path, source: Path) -> str:
         return str(source.relative_to(root))
     except ValueError:
         return str(source)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _source_signature(path: Path) -> dict[str, int]:

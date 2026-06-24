@@ -73,7 +73,6 @@ class ConfigTest(unittest.TestCase):
         config = merged_config({"llm": {"api_key": "llm-key"}, "search": {"enabled": False}})
 
         self.assertFalse(config["documents"]["enabled"])
-        self.assertFalse(config["documents"]["extract_enabled"])
         self.assertEqual("", config["documents"]["directory"])
         self.assertEqual("", config["documents"]["converter_path"])
         self.assertEqual(5, config["documents"]["max_results"])
@@ -90,17 +89,16 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "documents.directory"):
             validate_config(config)
 
-    def test_validate_requires_converter_path_when_extraction_enabled(self) -> None:
+    def test_validate_allows_enabled_documents_without_converter_path(self) -> None:
         config = merged_config(
             {
                 "llm": {"api_key": "llm-key"},
                 "search": {"enabled": False},
-                "documents": {"enabled": True, "extract_enabled": True, "directory": "/tmp/docs"},
+                "documents": {"enabled": True, "directory": "/tmp/docs", "converter_path": ""},
             }
         )
 
-        with self.assertRaisesRegex(ConfigError, "documents.converter_path"):
-            validate_config(config)
+        validate_config(config)
 
     def test_default_llm_api_type_is_completion(self) -> None:
         config = merged_config({"llm": {"api_key": "llm-key"}, "search": {"enabled": False}})
