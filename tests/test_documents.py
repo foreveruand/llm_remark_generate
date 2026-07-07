@@ -9,8 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin.config import merged_config
-from ankiplugin.documents import LocalDocumentProvider, document_settings, search_index
+from llm_remark_generate.config import merged_config
+from llm_remark_generate.documents import LocalDocumentProvider, document_settings, search_index
 
 
 class DocumentsTest(unittest.TestCase):

@@ -8,13 +8,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin.config import merged_config
-from ankiplugin.http_client import HttpClientError
-from ankiplugin.llm_client import LLMClient, LLMError
-from ankiplugin.search import brave as brave_module
-from ankiplugin.search import tavily as tavily_module
-from ankiplugin.search.brave import BraveSearchProvider
-from ankiplugin.search.tavily import TavilySearchProvider
+from llm_remark_generate.config import merged_config
+from llm_remark_generate.http_client import HttpClientError
+from llm_remark_generate.llm_client import LLMClient, LLMError
+from llm_remark_generate.search import brave as brave_module
+from llm_remark_generate.search import tavily as tavily_module
+from llm_remark_generate.search.brave import BraveSearchProvider
+from llm_remark_generate.search.tavily import TavilySearchProvider
 
 
 class LLMClientTest(unittest.TestCase):
@@ -40,7 +40,7 @@ class LLMClientTest(unittest.TestCase):
             )
             return {"choices": [{"message": {"content": " <p>ok</p> "}}]}
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json
@@ -92,7 +92,7 @@ class LLMClientTest(unittest.TestCase):
             captured["url"] = url
             return {"choices": [{"message": {"content": "ok"}}]}
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json
@@ -130,7 +130,7 @@ class LLMClientTest(unittest.TestCase):
                 )
             return {"choices": [{"message": {"content": "{\"need_search\": false}"}}]}
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json
@@ -180,7 +180,7 @@ class LLMClientTest(unittest.TestCase):
                 ]
             }
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json
@@ -242,7 +242,7 @@ class LLMClientTest(unittest.TestCase):
                 ]
             }
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json
@@ -297,7 +297,7 @@ class LLMClientTest(unittest.TestCase):
                 ]
             }
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json
@@ -334,7 +334,7 @@ class LLMClientTest(unittest.TestCase):
         ) -> dict[str, Any]:
             return {"data": [{"object": "model"}]}
 
-        import ankiplugin.llm_client as llm_module
+        import llm_remark_generate.llm_client as llm_module
 
         original_request_json = llm_module.request_json
         llm_module.request_json = fake_request_json

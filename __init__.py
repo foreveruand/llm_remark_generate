@@ -10,14 +10,8 @@ from .processor import append_field_content, generate_remark_html, prepare_note,
 
 
 ADDON_NAME = "LLM Remark Generator"
-REVIEWER_APPEND_COMMAND = "llm_remark_generator_append_current"
-REVIEWER_APPEND_BUTTON_HTML = (
-    '<span style="padding-left: 8px;">'
-    f'<button onclick="pycmd(\'{REVIEWER_APPEND_COMMAND}\')" '
-    'title="Append a new LLM result to the configured target field">'
-    "Append LLM Remark"
-    "</button></span>"
-)
+BROWSER_ACTION_TEXT = "Generate LLM Explain"
+REVIEWER_ACTION_TEXT = "Append LLM Explain"
 
 
 class _CancellationToken:
@@ -50,11 +44,6 @@ def _register() -> None:
         return
 
     from .config_dialog import show_config_dialog
-
-    try:
-        from aqt.reviewer import Reviewer
-    except Exception:
-        Reviewer = None
 
     class BatchProgressDialog(QDialog):
         def __init__(self, parent: Any, total: int, cancel_token: _CancellationToken) -> None:
@@ -116,13 +105,25 @@ def _register() -> None:
         set_config_action(__name__, lambda *_args: show_config_dialog(mw, __name__))
 
     def on_browser_menus_did_init(browser: Any) -> None:
-        action = QAction("Generate LLM Remark", browser)
+        action = QAction(BROWSER_ACTION_TEXT, browser)
         qconnect(action.triggered, lambda: _run_from_browser(browser))
 
         menu = getattr(browser.form, "menuNotes", None) or getattr(browser.form, "menuEdit", None)
         if menu is not None:
             menu.addSeparator()
             menu.addAction(action)
+
+    def _register_reviewer_menu_action() -> None:
+        action = QAction(REVIEWER_ACTION_TEXT, mw)
+        qconnect(action.triggered, lambda: _run_from_reviewer(getattr(mw, "reviewer", None)))
+
+        menu_bar = getattr(getattr(mw, "form", None), "menubar", None)
+        tools_menu = getattr(getattr(mw, "form", None), "menuTools", None)
+        if tools_menu is None and menu_bar is not None:
+            tools_menu = menu_bar.addMenu("Tools")
+        if tools_menu is not None:
+            tools_menu.addSeparator()
+            tools_menu.addAction(action)
 
     def _run_from_browser(browser: Any) -> None:
         note_ids = _selected_note_ids(browser)
@@ -288,30 +289,8 @@ def _register() -> None:
         _clear_note_in_flight(in_flight_note_ids, note_id)
         tooltip(f"{ADDON_NAME} failed: {exc}")
 
-    def _register_reviewer_append_button() -> None:
-        if Reviewer is None or getattr(Reviewer, "_llm_remark_append_button_patched", False):
-            return
-
-        original_bottom_html = getattr(Reviewer, "_bottomHTML", None)
-        original_link_handler = getattr(Reviewer, "_linkHandler", None)
-        if not callable(original_bottom_html) or not callable(original_link_handler):
-            return
-
-        def bottom_html(self: Any) -> str:
-            return _append_reviewer_button_html(original_bottom_html(self))
-
-        def link_handler(self: Any, command: str) -> Any:
-            if _is_reviewer_append_command(command):
-                _run_from_reviewer(self)
-                return None
-            return original_link_handler(self, command)
-
-        Reviewer._bottomHTML = bottom_html
-        Reviewer._linkHandler = link_handler
-        Reviewer._llm_remark_append_button_patched = True
-
     gui_hooks.browser_menus_did_init.append(on_browser_menus_did_init)
-    _register_reviewer_append_button()
+    _register_reviewer_menu_action()
 
 
 def _selected_note_ids(browser: Any) -> list[int]:
@@ -421,16 +400,6 @@ def _reviewer_append_result_message(result: BatchResult) -> str:
     if result.cancelled:
         return "generation stopped before writing"
     return "no result was written"
-
-
-def _append_reviewer_button_html(html: str) -> str:
-    if REVIEWER_APPEND_COMMAND in html:
-        return html
-    return f"{html}{REVIEWER_APPEND_BUTTON_HTML}"
-
-
-def _is_reviewer_append_command(command: str) -> bool:
-    return command == REVIEWER_APPEND_COMMAND
 
 
 def _current_reviewer_note_id(reviewer: Any) -> int | None:

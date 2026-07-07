@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin.package_addon import ADDON_NAME, ADDON_PACKAGE, build_addon
+from llm_remark_generate.package_addon import ADDON_NAME, ADDON_PACKAGE, build_addon
 
 
 class PackageAddonTest(unittest.TestCase):

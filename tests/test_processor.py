@@ -8,9 +8,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin.config import merged_config
-from ankiplugin.models import SearchResult
-from ankiplugin.processor import process_notes
+from llm_remark_generate.config import merged_config
+from llm_remark_generate.models import SearchResult
+from llm_remark_generate.processor import process_notes
 
 
 class FakeNote:
@@ -242,7 +242,7 @@ class ProcessorTest(unittest.TestCase):
         )
         documents = FakeDocumentProvider()
 
-        import ankiplugin.processor as processor_module
+        import llm_remark_generate.processor as processor_module
 
         original_from_config = processor_module.LocalDocumentProvider.from_config
         processor_module.LocalDocumentProvider.from_config = classmethod(lambda _cls, _config: documents)
@@ -287,7 +287,7 @@ class ProcessorTest(unittest.TestCase):
         )
         documents = FakeDocumentProvider()
 
-        import ankiplugin.processor as processor_module
+        import llm_remark_generate.processor as processor_module
 
         original_from_config = processor_module.LocalDocumentProvider.from_config
         processor_module.LocalDocumentProvider.from_config = classmethod(lambda _cls, _config: documents)
@@ -319,7 +319,7 @@ class ProcessorTest(unittest.TestCase):
         llm = FakeLLM(["<p>Four is correct.</p>"])
         documents = FakeDocumentProvider()
 
-        import ankiplugin.processor as processor_module
+        import llm_remark_generate.processor as processor_module
 
         original_from_config = processor_module.LocalDocumentProvider.from_config
         processor_module.LocalDocumentProvider.from_config = classmethod(lambda _cls, _config: documents)

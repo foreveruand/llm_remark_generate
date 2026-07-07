@@ -21,14 +21,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ankiplugin
+        working-directory: llm_remark_generate
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
-          path: ankiplugin
+          path: llm_remark_generate
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,7 +48,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: llm_remark_generator
-          path: ankiplugin/dist/llm_remark_generator.ankiaddon
+          path: llm_remark_generate/dist/llm_remark_generator.ankiaddon
           if-no-files-found: error
 
   build-converter:
@@ -64,14 +64,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: ankiplugin
+        working-directory: llm_remark_generate
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
-          path: ankiplugin
+          path: llm_remark_generate
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -94,7 +94,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ankiplugin/dist/converter/${{ matrix.executable }}
+          path: llm_remark_generate/dist/converter/${{ matrix.executable }}
           if-no-files-found: error
 
   publish-release:

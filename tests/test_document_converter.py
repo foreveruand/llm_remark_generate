@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin.converter.document_converter import convert_document, extract_pdf_text_fallback
+from llm_remark_generate.converter.document_converter import convert_document, extract_pdf_text_fallback
 
 
 class DocumentConverterTest(unittest.TestCase):

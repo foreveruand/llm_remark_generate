@@ -9,9 +9,9 @@ class ReleaseWorkflowTest(unittest.TestCase):
         workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
         content = workflow.read_text(encoding="utf-8")
 
-        self.assertIn("working-directory: ankiplugin", content)
-        self.assertIn("path: ankiplugin", content)
-        self.assertIn("ankiplugin/dist/llm_remark_generator.ankiaddon", content)
+        self.assertIn("working-directory: llm_remark_generate", content)
+        self.assertIn("path: llm_remark_generate", content)
+        self.assertIn("llm_remark_generate/dist/llm_remark_generator.ankiaddon", content)
         self.assertIn("python -m pip install pyinstaller pymupdf", content)
         self.assertIn("pyinstaller --onefile", content)
         self.assertIn("llm-document-converter.exe", content)

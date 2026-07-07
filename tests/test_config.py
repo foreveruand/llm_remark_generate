@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ankiplugin.config import ConfigError, merged_config, parse_mappings, validate_config
+from llm_remark_generate.config import ConfigError, merged_config, parse_mappings, validate_config
 
 
 class ConfigTest(unittest.TestCase):
