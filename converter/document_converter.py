@@ -11,6 +11,11 @@ from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree
 
+try:
+    from .legacy_office import extract_legacy_office
+except ImportError:  # PyInstaller invokes this file as the script entry point.
+    from legacy_office import extract_legacy_office
+
 
 SUPPORTED_SUFFIXES = {".doc", ".docx", ".html", ".htm", ".md", ".pdf", ".ppt", ".pptx", ".txt"}
 TEXT_SUFFIXES = {".md", ".txt"}
@@ -66,6 +71,8 @@ def convert_document(root: Path, source: Path) -> str:
         text = extract_html_text(source)
     elif suffix == ".pdf":
         text = extract_pdf_text(source)
+    elif suffix in {".doc", ".ppt"}:
+        text = extract_legacy_office_text(source)
     else:
         text = extract_binary_text(source)
 
@@ -101,6 +108,14 @@ def extract_ooxml_text(source: Path) -> str:
             if parts:
                 texts.append("\n".join(parts))
     return "\n\n".join(texts)
+
+
+def extract_legacy_office_text(source: Path) -> str:
+    """Extract text from the OLE2 Word/PowerPoint formats."""
+    try:
+        return extract_legacy_office(source)
+    except (KeyError, ValueError, IndexError):
+        return extract_binary_text(source)
 
 
 def extract_html_text(source: Path) -> str:
@@ -203,6 +218,7 @@ def _looks_like_text(text: str) -> bool:
 
 def clean_text(text: str) -> str:
     text = text.replace("\x00", "")
+    text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

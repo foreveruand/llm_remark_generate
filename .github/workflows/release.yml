@@ -82,7 +82,7 @@ jobs:
         run: python -m pip install pyinstaller pymupdf
 
       - name: Build converter executable
-        run: pyinstaller --onefile --name llm-document-converter converter/document_converter.py
+        run: pyinstaller --onefile --name llm-document-converter --paths converter --hidden-import legacy_office converter/document_converter.py
 
       - name: Stage converter executable
         shell: bash

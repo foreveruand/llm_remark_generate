@@ -14,6 +14,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("llm_remark_generate/dist/llm_remark_generator.ankiaddon", content)
         self.assertIn("python -m pip install pyinstaller pymupdf", content)
         self.assertIn("pyinstaller --onefile", content)
+        self.assertIn("--paths converter --hidden-import legacy_office", content)
         self.assertIn("llm-document-converter.exe", content)
 
 

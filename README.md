@@ -21,6 +21,9 @@ and write the final explanation into a target field such as `Remark`.
 - Let the LLM request local document search or web search during generation when needed.
 - Extract local documents manually from the configuration dialog, then use the
   existing index during generation.
+- Extraction scans the configured directory recursively, including its
+  subdirectories. `.docx` and `.pptx` files are parsed directly; legacy `.doc`
+  and `.ppt` files are parsed directly without external command dependencies.
 - Write concise HTML into the configured target field.
 - Optionally combine final explanation generation for multiple notes into one LLM request.
 
