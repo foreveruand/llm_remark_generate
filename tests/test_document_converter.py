@@ -129,6 +129,95 @@ class DocumentConverterTest(unittest.TestCase):
 
             self.assertIn("中文控制策略", markdown)
 
+    def test_converts_docx_tables_to_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "report.docx"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr(
+                    "word/document.xml",
+                    (
+                        '<?xml version="1.0" encoding="UTF-8"?>'
+                        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                        "<w:body>"
+                        "<w:p><w:r><w:t>Status</w:t></w:r></w:p>"
+                        "<w:tbl><w:tr>"
+                        "<w:tc><w:p><w:r><w:t>ID</w:t></w:r></w:p></w:tc>"
+                        "<w:tc><w:p><w:r><w:t>Area</w:t></w:r></w:p></w:tc>"
+                        "<w:tc><w:p><w:r><w:t>State</w:t></w:r></w:p></w:tc>"
+                        "</w:tr><w:tr>"
+                        "<w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc>"
+                        "<w:tc><w:p><w:r><w:t>North</w:t></w:r></w:p></w:tc>"
+                        "<w:tc><w:p><w:r><w:t>Ready</w:t></w:r></w:p></w:tc>"
+                        "</w:tr></w:tbl>"
+                        "</w:body></w:document>"
+                    ),
+                )
+
+            markdown = convert_document(root, source)
+
+            self.assertIn("Status", markdown)
+            self.assertIn("| ID | Area | State |", markdown)
+            self.assertIn("| --- | --- | --- |", markdown)
+            self.assertIn("| 1 | North | Ready |", markdown)
+
+    def test_pdf_layout_drops_watermark_and_joins_wrapped_lines(self) -> None:
+        blocks = [
+            {
+                "type": 0,
+                "lines": [
+                    {
+                        "dir": (0.94, -0.34),
+                        "bbox": (0, 200, 500, 220),
+                        "spans": [{"text": "CONFIDENTIAL SAMPLE 2026-04-24 15:28:20"}],
+                    },
+                    {
+                        "dir": (1, 0),
+                        "bbox": (79, 120, 520, 140),
+                        "spans": [{"text": "Wrapped body text continues"}],
+                    },
+                    {
+                        "dir": (1, 0),
+                        "bbox": (79, 148, 400, 168),
+                        "spans": [{"text": "on the next visual line."}],
+                    },
+                    {
+                        "dir": (1, 0),
+                        "bbox": (450, 760, 510, 778),
+                        "spans": [{"text": "— 1 —"}],
+                    },
+                ],
+            }
+        ]
+
+        class FakePage:
+            rect = type("Rect", (), {"height": 842})()
+
+            def get_text(self, mode: str):
+                self.mode = mode
+                return {"blocks": blocks}
+
+        from llm_remark_generate.converter.document_converter import _pdf_page_text
+
+        text = _pdf_page_text(FakePage())
+
+        self.assertEqual("Wrapped body text continues on the next visual line.", text)
+        self.assertNotIn("CONFIDENTIAL", text)
+        self.assertNotIn("— 1 —", text)
+
+    def test_pdf_keeps_clause_numbers_separate_across_pages(self) -> None:
+        from llm_remark_generate.converter.document_converter import _join_pdf_pages
+
+        pages = [
+            [(72.0, "Body text is indented and wraps across the page boundary with-")],
+            [(40.0, "out losing the trailing word."), (72.0, "The next paragraph starts again.")],
+        ]
+
+        text = _join_pdf_pages(pages)
+
+        self.assertIn("without losing the trailing word.", text)
+        self.assertIn("\n\nThe next paragraph starts again.", text)
+
     def test_pdf_fallback_extracts_literal_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             source = Path(tmpdir) / "sample.pdf"
@@ -168,6 +257,48 @@ class DocumentConverterTest(unittest.TestCase):
             (root / ".llm_remark_index" / "stale.pptx").touch()
 
             self.assertEqual([source], iter_documents(root))
+
+    def test_iter_documents_accepts_a_single_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "manual.docx"
+            source.touch()
+
+            self.assertEqual([source], iter_documents(source))
+
+    def test_main_converts_a_single_file(self) -> None:
+        from llm_remark_generate.converter.document_converter import main
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "note.txt"
+            source.write_text("单文件转换", encoding="utf-8")
+            output = root / "out"
+
+            code = main(["--input", str(source), "--output", str(output)])
+
+            self.assertEqual(0, code)
+            converted = (output / "note.txt.md").read_text(encoding="utf-8")
+            self.assertIn("单文件转换", converted)
+            self.assertIn("Source: note.txt", converted)
+
+    def test_formats_headings_clause_labels_and_toc(self) -> None:
+        from llm_remark_generate.converter.document_converter import format_markdown
+
+        text = "\n\n".join(
+            [
+                "Chapter One ................................ 1",
+                "Ordinary sentence 2 stays unchanged.",
+                "| Item | Value |",
+                "| --- | --- |",
+                "| A | 1 |",
+            ]
+        )
+
+        markdown = format_markdown(text)
+
+        self.assertIn("- Chapter One (1)", markdown)
+        self.assertIn("Ordinary sentence 2 stays unchanged.", markdown)
+        self.assertIn("| --- | --- |", markdown)
 
     def test_legacy_doc_extracts_word_piece_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
