@@ -318,10 +318,59 @@ def _pdf_page_text(page: object) -> str:
 def _pdf_page_lines(page: object) -> list[tuple[float, str]]:
     data = page.get_text("dict")  # type: ignore[attr-defined]
     height = float(page.rect.height)  # type: ignore[attr-defined]
-    return _pdf_body_lines(data.get("blocks", []), height)
+    tables = _pdf_page_tables(page)
+    boxes = tuple(bbox for bbox, _markdown in tables)
+    entries: list[tuple[float, float, str]] = list(
+        _pdf_body_lines(data.get("blocks", []), height, boxes)
+    )
+    for bbox, markdown in tables:
+        entries.append((bbox[1], bbox[0], markdown))
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+    return [(x0, text) for _y0, x0, text in entries]
 
 
-def _pdf_body_lines(blocks: list[dict], page_height: float) -> list[tuple[float, str]]:
+def _pdf_page_tables(page: object) -> list[tuple[tuple[float, float, float, float], str]]:
+    """Detect ruled tables on a page and render them as Markdown blocks."""
+    find_tables = getattr(page, "find_tables", None)
+    if find_tables is None:
+        return []
+    try:
+        found = find_tables()
+    except Exception:
+        return []
+    tables = getattr(found, "tables", None)
+    if tables is None:
+        try:
+            tables = list(found)
+        except TypeError:
+            return []
+    detected: list[tuple[tuple[float, float, float, float], str]] = []
+    for table in tables:
+        try:
+            bbox = tuple(float(value) for value in table.bbox)
+            raw_rows = table.extract()
+        except Exception:
+            continue
+        rows = [[_pdf_table_cell_text(cell) for cell in row] for row in (raw_rows or [])]
+        rows = [row for row in rows if any(cell.strip() for cell in row)]
+        markdown = markdown_table(rows)
+        if markdown:
+            detected.append((bbox, markdown))
+    return detected
+
+
+def _pdf_table_cell_text(cell: object) -> str:
+    if cell is None:
+        return ""
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in str(cell).splitlines()]
+    return "<br>".join(line for line in lines if line)
+
+
+def _pdf_body_lines(
+    blocks: list[dict],
+    page_height: float,
+    table_boxes: tuple[tuple[float, float, float, float], ...] = (),
+) -> list[tuple[float, float, str]]:
     rows: dict[float, list[tuple[float, str]]] = {}
     for block in blocks:
         if block.get("type") != 0:
@@ -334,16 +383,33 @@ def _pdf_body_lines(blocks: list[dict], page_height: float) -> list[tuple[float,
             text = "".join(span.get("text", "") for span in spans).strip()
             if not text or _is_pdf_page_number(text):
                 continue
-            x0, y0, _, y1 = (float(value) for value in line["bbox"])
+            x0, y0, x1, y1 = (float(value) for value in line["bbox"])
             if y0 < page_height * 0.045 or y1 > page_height * 0.95:
+                continue
+            if _center_in_boxes(x0, y0, x1, y1, table_boxes):
                 continue
             key = round(y0, 1)
             rows.setdefault(key, []).append((x0, text))
-    ordered: list[tuple[float, str]] = []
+    ordered: list[tuple[float, float, str]] = []
     for key in sorted(rows):
         pieces = sorted(rows[key])
-        ordered.append((pieces[0][0], "".join(text for _, text in pieces)))
+        ordered.append((key, pieces[0][0], "".join(text for _, text in pieces)))
     return ordered
+
+
+def _center_in_boxes(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    boxes: tuple[tuple[float, float, float, float], ...],
+) -> bool:
+    center_x = (x0 + x1) / 2
+    center_y = (y0 + y1) / 2
+    return any(
+        box_x0 <= center_x <= box_x1 and box_y0 <= center_y <= box_y1
+        for box_x0, box_y0, box_x1, box_y1 in boxes
+    )
 
 
 def _is_horizontal(direction: tuple[float, float]) -> bool:
@@ -365,6 +431,12 @@ def _join_pdf_pages(pages: list[list[tuple[float, str]]]) -> str:
     for lines in pages:
         body_indent = _body_indent(lines)
         for indent, line in lines:
+            if _is_markdown_table_block(line):
+                if current:
+                    paragraphs.append(current)
+                    current, current_indent = "", None
+                paragraphs.append(line)
+                continue
             if not current:
                 current, current_indent = line, indent
                 continue
@@ -385,7 +457,7 @@ def _join_pdf_lines(lines: list[tuple[float, str]]) -> str:
 
 
 def _body_indent(lines: list[tuple[float, str]]) -> float:
-    indents = [indent for indent, _ in lines]
+    indents = [indent for indent, line in lines if not _is_markdown_table_block(line)]
     if not indents:
         return 0.0
     return Counter(round(indent, 0) for indent in indents).most_common(1)[0][0]
@@ -514,6 +586,11 @@ def remove_repeated_short_lines(text: str) -> str:
 
 def _is_markdown_table_line(line: str) -> bool:
     return line.startswith("|") and line.endswith("|")
+
+
+def _is_markdown_table_block(text: str) -> bool:
+    first = text.splitlines()[0] if text else ""
+    return _is_markdown_table_line(first)
 
 
 _TOC_RE = re.compile(r"^(.{1,80}?)(?:[ .．。…]{2,}|…+)\s*(\d{1,4})\s*$")

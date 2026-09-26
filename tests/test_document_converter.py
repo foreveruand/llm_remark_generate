@@ -97,6 +97,43 @@ def ole_file(streams: dict[str, bytes], mini: bool = False) -> bytes:
     return bytes(header) + b"".join(sectors) + struct.pack("<%dI" % 128, *(fat + [0xFFFFFFFF] * (128 - len(fat))))
 
 
+class FakeTable:
+    def __init__(self, bbox: tuple[float, float, float, float], rows: list[list[str | None]]) -> None:
+        self.bbox = bbox
+        self._rows = rows
+
+    def extract(self) -> list[list[str | None]]:
+        return self._rows
+
+
+class FakeFinder:
+    def __init__(self, tables: list[FakeTable]) -> None:
+        self.tables = tables
+
+
+def text_block(entries: list[tuple[float, float, float, float, str]]) -> dict:
+    return {
+        "type": 0,
+        "lines": [
+            {"dir": (1, 0), "bbox": (x0, y0, x1, y1), "spans": [{"text": text}]}
+            for x0, y0, x1, y1, text in entries
+        ],
+    }
+
+
+def fake_pdf_page(blocks: list[dict], height: float = 842, find_tables=None) -> object:
+    class FakePage:
+        rect = type("Rect", (), {"height": height})()
+
+        def get_text(self, mode: str) -> dict:
+            return {"blocks": blocks}
+
+    page = FakePage()
+    if find_tables is not None:
+        page.find_tables = find_tables  # type: ignore[attr-defined]
+    return page
+
+
 class DocumentConverterTest(unittest.TestCase):
     def test_converts_plain_markdown_with_source_header(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -226,6 +263,123 @@ class DocumentConverterTest(unittest.TestCase):
             text = extract_pdf_text_fallback(source)
 
             self.assertIn("fallback text", text)
+
+    def test_pdf_page_emits_markdown_table_with_br_cells(self) -> None:
+        from llm_remark_generate.converter.document_converter import _pdf_page_text
+
+        blocks = [
+            text_block(
+                [
+                    (72, 100, 400, 118, "Heading above the table"),
+                    (80, 200, 300, 218, "cell text inside table"),
+                ]
+            )
+        ]
+        finder = FakeFinder(
+            [
+                FakeTable(
+                    (64, 137, 777, 505),
+                    [
+                        ["Header A", "Header B", "Header C"],
+                        ["Row 1", "1.a\n2.b", "3.c"],
+                    ],
+                )
+            ]
+        )
+
+        text = _pdf_page_text(fake_pdf_page(blocks, find_tables=lambda: finder))
+
+        self.assertIn("| Header A | Header B | Header C |", text)
+        self.assertIn("| --- | --- | --- |", text)
+        self.assertIn("| Row 1 | 1.a<br>2.b | 3.c |", text)
+        self.assertIn("Heading above the table", text)
+        self.assertNotIn("cell text inside table", text)
+
+    def test_pdf_table_cell_normalizer_joins_lines_with_br(self) -> None:
+        from llm_remark_generate.converter.document_converter import (
+            _pdf_table_cell_text,
+            markdown_table,
+        )
+
+        self.assertEqual("", _pdf_table_cell_text(None))
+        self.assertEqual(
+            "1.a<br>2.b<br>3.c",
+            _pdf_table_cell_text("1.a\n  2.b\n\n3.c"),
+        )
+        self.assertIn("a\\|b", markdown_table([["a|b", "plain"]]))
+
+    def test_pdf_page_orders_table_between_prose(self) -> None:
+        from llm_remark_generate.converter.document_converter import _pdf_page_text
+
+        blocks = [
+            text_block(
+                [
+                    (72, 90, 400, 108, "Above the table"),
+                    (72, 700, 400, 718, "Below the table"),
+                ]
+            )
+        ]
+        finder = FakeFinder([FakeTable((64, 300, 777, 500), [["H1", "H2"], ["A", "B"]])])
+
+        text = _pdf_page_text(fake_pdf_page(blocks, find_tables=lambda: finder))
+
+        self.assertLess(text.index("Above the table"), text.index("| H1 | H2 |"))
+        self.assertLess(text.index("| H1 | H2 |"), text.index("Below the table"))
+
+    def test_join_pdf_pages_keeps_table_atomic(self) -> None:
+        from llm_remark_generate.converter.document_converter import _join_pdf_pages
+
+        table = "| a | b |\n| --- | --- |\n| 1 | 2 |"
+        text = _join_pdf_pages(
+            [[(72.0, "Intro sentence"), (72.0, table), (72.0, "Outro sentence")]]
+        )
+
+        self.assertIn("Intro sentence\n\n| a | b |", text)
+        self.assertIn("| 1 | 2 |\n\nOutro sentence", text)
+
+    def test_pdf_page_without_find_tables_falls_back_to_prose(self) -> None:
+        from llm_remark_generate.converter.document_converter import _pdf_page_text
+
+        blocks = [text_block([(79, 120, 520, 140, "Wrapped body text continues")])]
+
+        self.assertEqual("Wrapped body text continues", _pdf_page_text(fake_pdf_page(blocks)))
+
+    def test_pdf_page_tolerates_find_tables_error(self) -> None:
+        from llm_remark_generate.converter.document_converter import _pdf_page_text
+
+        def boom():
+            raise RuntimeError("detector unavailable")
+
+        blocks = [text_block([(79, 120, 520, 140, "Body text survives")])]
+
+        text = _pdf_page_text(fake_pdf_page(blocks, find_tables=boom))
+
+        self.assertEqual("Body text survives", text)
+
+    def test_pdf_page_accepts_iterable_table_finder(self) -> None:
+        from llm_remark_generate.converter.document_converter import _pdf_page_text
+
+        class IterableFinder:
+            def __iter__(self):
+                return iter([FakeTable((10, 10, 200, 60), [["H1", "H2"], ["A", "B"]])])
+
+        blocks = [text_block([(72, 100, 300, 118, "Prose line")])]
+
+        text = _pdf_page_text(fake_pdf_page(blocks, find_tables=lambda: IterableFinder()))
+
+        self.assertIn("| H1 | H2 |", text)
+        self.assertIn("Prose line", text)
+
+    def test_pdf_table_drops_none_and_blank_rows(self) -> None:
+        from llm_remark_generate.converter.document_converter import _pdf_page_tables
+
+        finder = FakeFinder([FakeTable((0, 0, 100, 100), [["h1", "h2"], [None, None]])])
+        page = fake_pdf_page([], find_tables=lambda: finder)
+
+        tables = _pdf_page_tables(page)
+
+        self.assertEqual(1, len(tables))
+        self.assertEqual("| h1 | h2 |\n| --- | --- |", tables[0][1])
 
     def test_converts_pptx_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
